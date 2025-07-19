@@ -1,0 +1,105 @@
+# Hubness攻击配置
+
+# 基础攻击参数
+attack:
+  name: "hubness_attack"
+  type: "adversarial"
+  
+  # Hubness攻击特定参数
+  hubness:
+    epsilon: 0.03  # 扰动强度
+    num_iterations: 40  # 迭代次数
+    step_size: 0.01  # 步长
+    k_neighbors: 10  # 近邻数量
+    hubness_threshold: 0.8  # Hubness阈值
+    attack_mode: "targeted"  # "targeted" or "untargeted"
+    
+    # 损失函数权重
+    loss_weights:
+      hubness_loss: 1.0
+      similarity_loss: 0.5
+      norm_constraint: 0.1
+    
+    # 优化参数
+    optimizer: "adam"
+    learning_rate: 0.01
+    momentum: 0.9
+    
+    # 约束参数
+    norm_type: "l2"  # "l1", "l2", "linf"
+    clip_values: [0.0, 1.0]
+    
+  # 目标设置
+  target:
+    strategy: "random"  # "random", "least_likely", "most_likely"
+    num_targets: 5
+    target_class: null
+    
+  # 评估参数
+  evaluation:
+    success_threshold: 0.5
+    metrics: ["attack_success_rate", "perturbation_norm", "semantic_similarity"]
+    
+# 自适应攻击配置
+adaptive_attack:
+  enabled: true
+  
+  # 自适应参数
+  adaptation:
+    consistency_weight: 0.3
+    detection_weight: 0.7
+    adaptation_rate: 0.1
+    max_adaptations: 10
+    
+  # 一致性估计
+  consistency_estimation:
+    num_samples: 100
+    sampling_strategy: "uniform"
+    confidence_threshold: 0.8
+    
+  # 防御感知
+  defense_awareness:
+    probe_defense: true
+    defense_type: "ensemble"  # "consistency", "similarity", "statistical", "ensemble"
+    probe_iterations: 5
+    
+# 批量攻击配置
+batch_attack:
+  batch_size: 16
+  parallel_processing: true
+  max_workers: 4
+  timeout_per_sample: 60  # 秒
+  
+# 缓存配置
+cache:
+  enabled: true
+  cache_dir: "./cache/attacks/hubness"
+  cache_attacks: true
+  cache_results: true
+  max_cache_size: "10GB"
+  
+# 输出配置
+output:
+  save_adversarial_samples: true
+  save_attack_statistics: true
+  save_intermediate_results: false
+  output_format: "numpy"  # "numpy", "torch", "pil"
+  
+# 实验配置
+experiment:
+  num_runs: 5
+  random_seed: 42
+  reproducible: true
+  
+# 硬件配置
+hardware:
+  device: "cuda"
+  mixed_precision: true
+  compile_models: false  # 攻击时可能影响梯度计算
+  
+# 日志配置
+logging:
+  level: "INFO"
+  log_attack_progress: true
+  log_interval: 10
+  save_logs: true

@@ -1,0 +1,200 @@
+# 默认配置文件
+# 多模态检测一致性实验配置
+
+# 模型配置
+models:
+  clip:
+    model_name: "ViT-B/32"
+    device: "cuda"
+    batch_size: 512  # 增大批处理大小以充分利用GPU
+    normalize: true
+    precision: "fp16"  # 使用fp16提高性能
+    cache_dir: "./cache/clip"
+    # 多GPU配置
+    use_multi_gpu: true
+    gpu_ids: [0, 1, 2, 3, 4, 5]
+    parallel_type: "data_parallel"
+  
+  qwen:
+    model_name: "Qwen/Qwen2-VL-7B-Instruct"
+    device: "cuda"
+    max_length: 512
+    temperature: 0.7
+    top_p: 0.9
+    cache_dir: "./cache/qwen"
+  
+  stable_diffusion:
+    model_name: "runwayml/stable-diffusion-v1-5"
+    device: "cuda"
+    num_inference_steps: 20
+    guidance_scale: 7.5
+    height: 512
+    width: 512
+    batch_size: 8  # 增大批处理大小
+    fp16: true
+    cache_dir: "./cache/sd"
+    # 多GPU配置
+    use_multi_gpu: true
+    gpu_ids: [0, 1, 2, 3, 4, 5]
+    max_models_per_gpu: 1  # 每个GPU一个模型实例
+    enable_attention_slicing: true
+    enable_xformers: true
+    enable_cpu_offload: false  # 多GPU时禁用CPU卸载
+
+# 文本增强配置
+text_augment:
+  num_variants: 10
+  similarity_threshold: 0.85
+  max_retries: 3
+  temperature: 0.7
+  diversity_penalty: 0.1
+  filter_duplicates: true
+  min_similarity: 0.7
+  max_similarity: 0.95
+
+# 检索配置
+retrieval:
+  top_k: 20
+  batch_size: 256
+  similarity_metric: "cosine"
+  normalize_features: true
+  device: "cuda"
+  index_type: "faiss"
+  use_gpu_index: true
+
+# SD参考生成配置
+sd_reference:
+  num_images_per_text: 3
+  batch_size: 4
+  num_inference_steps: 20
+  guidance_scale: 7.5
+  height: 512
+  width: 512
+  seed: null
+  device: "cuda"
+  
+  # 优化配置
+  optimization:
+    enable_offline_cache: true
+    cache_dir: "./cache/sd_references"
+    cache_size_limit: "50GB"
+    precompute_common_queries: true
+    fast_path_enabled: true
+    fallback_timeout_ms: 100
+    async_generation: true
+    fp16_inference: true
+    torch_compile: true
+
+# 参考库管理配置
+reference_bank:
+  max_size: 10000
+  similarity_threshold: 0.9
+  clustering_method: "kmeans"
+  num_clusters: 100
+  update_strategy: "fifo"
+  persistence_enabled: true
+  save_path: "./cache/ref_bank"
+
+# 检测器配置
+detector:
+  ensemble:
+    weights: [0.3, 0.3, 0.4]  # [consistency, similarity, statistical]
+    voting_strategy: "weighted"
+    confidence_threshold: 0.5
+  
+  consistency:
+    threshold: 0.8
+    aggregation_method: "mean"
+    outlier_detection: true
+  
+  similarity:
+    threshold: 0.85
+    metric: "cosine"
+    reference_selection: "top_k"
+  
+  statistical:
+    method: "isolation_forest"
+    contamination: 0.1
+    n_estimators: 100
+
+# 流水线配置
+pipeline:
+  enable_profiling: true
+  save_intermediate_results: false
+  cache_enabled: true
+  parallel_processing: true
+  max_workers: 4
+  timeout_seconds: 300
+  
+  # 评估配置
+  evaluation:
+    metrics: ["accuracy", "precision", "recall", "f1", "auc"]
+    cross_validation_folds: 5
+    test_size: 0.2
+    random_state: 42
+
+# 数据配置
+data:
+  datasets:
+    coco:
+      root_dir: "./data/coco"
+      split: "val2017"
+      max_samples: 5000
+    
+    flickr30k:
+      root_dir: "./data/flickr30k"
+      split: "test"
+      max_samples: 1000
+  
+  preprocessing:
+    image_size: [224, 224]
+    normalize: true
+    augmentation: false
+  
+  loading:
+    batch_size: 32
+    num_workers: 4
+    shuffle: true
+    pin_memory: true
+
+# 实验配置
+experiment:
+  name: "multimodal_detection_consistency"
+  output_dir: "./results"
+  log_level: "INFO"
+  save_checkpoints: true
+  checkpoint_interval: 100
+  
+  # 随机种子
+  random_seed: 42
+  
+  # 硬件配置
+  hardware:
+    use_cuda: true
+    cuda_devices: [0, 1, 2, 3, 4, 5]  # RTX 4090 x6
+    mixed_precision: true
+    compile_models: true
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "./logs/experiment.log"
+  console: true
+  
+# 可视化配置
+visualization:
+  save_plots: true
+  plot_format: "png"
+  dpi: 300
+  style: "seaborn"
+  color_palette: "husl"
+
+# 缓存配置
+cache:
+  enabled: true
+  backend: "disk"  # "memory" or "disk"
+  max_memory_size: "8GB"
+  max_disk_size: "100GB"
+  ttl_seconds: 3600
+  cleanup_interval: 300
