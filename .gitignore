@@ -71,6 +71,8 @@ Thumbs.db
 *.tar.gz
 *.rar
 *.7z
+*.sh
+miniconda.sh
 
 # OS generated files
 .DS_Store
