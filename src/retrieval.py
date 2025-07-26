@@ -15,7 +15,7 @@ import pickle
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 import faiss
-from models import CLIPModel, CLIPConfig
+from .models import CLIPModel, CLIPConfig
 from PIL import Image
 import time
 

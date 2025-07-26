@@ -23,19 +23,19 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# 添加src目录到Python路径
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# 添加项目根目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.config import ConfigManager
-from utils.data_loader import DataLoaderManager
-from utils.metrics import MetricsCalculator
-from utils.visualization import VisualizationManager
-from pipeline import MultiModalDetectionPipeline, create_detection_pipeline
-from evaluation import ExperimentEvaluator, ExperimentConfig, create_experiment_evaluator
-from text_augment import TextAugmenter, TextVariantConfig
-from sd_ref import StableDiffusionReferenceGenerator, SDGenerationConfig
-from retrieval import MultiModalRetriever, RetrievalConfig
-from detector import AdversarialDetector, DetectorConfig
+from src.utils.config import ConfigManager
+from src.utils.data_loader import DataLoaderManager
+from src.utils.metrics import MetricsCalculator
+from src.utils.visualization import ExperimentVisualizer
+from src.pipeline import MultiModalDetectionPipeline, create_detection_pipeline
+from src.evaluation import ExperimentEvaluator, ExperimentConfig, create_experiment_evaluator
+from src.text_augment import TextAugmenter, TextAugmentConfig
+from src.sd_ref import SDReferenceGenerator, SDReferenceConfig
+from src.retrieval import MultiModalRetriever, RetrievalConfig
+from src.detector import AdversarialDetector, DetectorConfig
 
 # 设置日志
 logging.basicConfig(
@@ -85,7 +85,7 @@ class AblationStudyManager:
         self.base_config = base_config
         self.results = {}
         self.metrics_calculator = MetricsCalculator()
-        self.visualization_manager = VisualizationManager()
+        self.visualization_manager = ExperimentVisualizer()
         
         # 创建输出目录
         self.output_dir = Path(config.output_dir)
@@ -481,7 +481,10 @@ class AblationStudyManager:
         logger.info("生成可视化图表")
         
         # 设置图表样式
-        plt.style.use('seaborn-v0_8')
+        try:
+            plt.style.use('seaborn-v0_8-whitegrid')
+        except OSError:
+            plt.style.use('default')
         sns.set_palette("husl")
         
         # 为每个类别生成对比图

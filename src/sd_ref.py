@@ -14,8 +14,8 @@ import json
 import hashlib
 from PIL import Image
 import time
-from models import StableDiffusionModel, StableDiffusionConfig
-from text_augment import TextAugmenter, TextAugmentConfig
+from .models import StableDiffusionModel, StableDiffusionConfig
+from .text_augment import TextAugmenter, TextAugmentConfig
 import random
 
 logger = logging.getLogger(__name__)

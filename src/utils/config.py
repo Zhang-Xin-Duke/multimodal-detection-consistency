@@ -158,11 +158,22 @@ class ConfigManager:
         """加载默认配置"""
         self.config = {
             'model': ModelConfig(),
+            'models': {},  # 支持新的models配置节
             'data': DataConfig(),
             'experiment': ExperimentConfig(),
             'attack': AttackConfig(),
             'defense': DefenseConfig(),
-            'evaluation': EvaluationConfig()
+            'evaluation': EvaluationConfig(),
+            # 支持default.yaml中的新配置节
+            'text_augment': {},
+            'retrieval': {},
+            'sd_reference': {},
+            'reference_bank': {},
+            'detector': {},
+            'pipeline': {},
+            'logging': {},
+            'visualization': {},
+            'cache': {}
         }
     
     def load_config(self, config_path: str) -> Dict[str, Any]:
@@ -205,17 +216,23 @@ class ConfigManager:
         for section, values in yaml_config.items():
             if section in self.config:
                 if isinstance(values, dict):
-                    # 更新dataclass字段
+                    # 如果是dataclass对象，更新其字段
                     config_obj = self.config[section]
-                    for key, value in values.items():
-                        if hasattr(config_obj, key):
-                            setattr(config_obj, key, value)
-                        else:
-                            logger.warning(f"未知配置项: {section}.{key}")
+                    if hasattr(config_obj, '__dict__'):
+                        for key, value in values.items():
+                            if hasattr(config_obj, key):
+                                setattr(config_obj, key, value)
+                            else:
+                                logger.debug(f"配置项 {section}.{key} 不在预定义字段中，将直接存储")
+                    else:
+                        # 如果是字典，直接更新
+                        self.config[section].update(values)
                 else:
                     self.config[section] = values
             else:
-                logger.warning(f"未知配置节: {section}")
+                # 对于新的配置节，直接添加
+                self.config[section] = values
+                logger.debug(f"添加新配置节: {section}")
     
     def save_config(self, output_path: str):
         """
@@ -405,3 +422,25 @@ def validate_config() -> bool:
         配置是否有效
     """
     return config_manager.validate_config()
+
+
+def get_qwen_cache_dir() -> str:
+    """
+    获取Qwen模型的缓存目录
+    
+    Returns:
+        Qwen模型缓存目录路径
+    """
+    try:
+        # 尝试从配置中获取
+        if hasattr(config_manager.config.get('models', {}), 'get'):
+            qwen_config = config_manager.config['models'].get('qwen', {})
+            if isinstance(qwen_config, dict) and 'cache_dir' in qwen_config:
+                return qwen_config['cache_dir']
+        
+        # 如果配置中没有，返回默认值
+        return "./cache/qwen"
+        
+    except Exception as e:
+        logger.warning(f"获取Qwen缓存目录失败，使用默认值: {e}")
+        return "./cache/qwen"

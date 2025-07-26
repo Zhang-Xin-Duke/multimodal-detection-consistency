@@ -58,8 +58,7 @@ isort>=5.12.0
 # Performance and Optimization
 numba>=0.57.0
 cupy-cuda12x>=12.0.0; sys_platform != "darwin"
-faiss-gpu>=1.7.4; sys_platform != "darwin"
-faiss-cpu>=1.7.4; sys_platform == "darwin"
+
 
 # Text Processing
 ftfy>=6.1.0

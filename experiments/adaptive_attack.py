@@ -27,19 +27,19 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-# 添加src目录到Python路径
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# 添加项目根目录到Python路径
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.config import ConfigManager
-from utils.data_loader import DataLoaderManager
-from utils.metrics import MetricsCalculator
-from utils.visualization import VisualizationManager
-from pipeline import MultiModalDetectionPipeline, create_detection_pipeline
-from evaluation import ExperimentEvaluator, ExperimentConfig, create_experiment_evaluator
-from attacks import HubnessAttacker, create_hubness_attacker
-from models.clip_model import CLIPModel
-from models.qwen_model import QwenModel
-from models.sd_model import StableDiffusionModel
+from src.utils.config import ConfigManager
+from src.utils.data_loader import DataLoaderManager
+from src.utils.metrics import MetricsCalculator
+from src.utils.visualization import ExperimentVisualizer
+from src.pipeline import MultiModalDetectionPipeline, create_detection_pipeline
+from src.evaluation import ExperimentEvaluator, ExperimentConfig, create_experiment_evaluator
+from src.attacks import HubnessAttacker, create_hubness_attacker
+from src.models.clip_model import CLIPModel
+from src.models.qwen_model import QwenModel
+from src.models.sd_model import StableDiffusionModel
 
 # 设置日志
 logging.basicConfig(
@@ -614,7 +614,7 @@ class AdaptiveAttackExperimentManager:
         
         # 初始化组件
         self.metrics_calculator = MetricsCalculator()
-        self.visualization_manager = VisualizationManager()
+        self.visualization_manager = ExperimentVisualizer()
         
     def run_adaptive_attack_experiments(self, test_data: List[Tuple]) -> Dict[str, Any]:
         """
@@ -985,7 +985,10 @@ class AdaptiveAttackExperimentManager:
         logger.info("生成可视化图表")
         
         # 设置图表样式
-        plt.style.use('seaborn-v0_8')
+        try:
+            plt.style.use('seaborn-v0_8-whitegrid')
+        except OSError:
+            plt.style.use('default')
         sns.set_palette("husl")
         
         # 1. 攻击成功率对比

@@ -19,12 +19,12 @@ from sklearn.metrics import roc_curve, auc, precision_recall_curve
 from sklearn.model_selection import cross_val_score
 import torch
 
-from utils.metrics import (
+from ..utils.metrics import (
     MetricResult, RetrievalMetrics, DetectionMetrics,
     RetrievalEvaluator, DetectionEvaluator, SimilarityMetrics
 )
-from utils.visualization import MetricsVisualizer, ExperimentVisualizer
-from pipeline import MultiModalDetectionPipeline, PipelineResult
+from ..utils.visualization import MetricsVisualizer, ExperimentVisualizer
+from ..pipeline import MultiModalDetectionPipeline, PipelineResult
 
 logger = logging.getLogger(__name__)
 

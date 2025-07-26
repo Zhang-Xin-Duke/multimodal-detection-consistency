@@ -15,14 +15,14 @@ import time
 from PIL import Image
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from src.models.clip_model import CLIPModel
-from src.text_augment import TextAugmenter, TextAugmentConfig
-from src.retrieval import MultiModalRetriever, RetrievalConfig
-from src.sd_ref import SDReferenceGenerator, SDReferenceConfig
-from src.detector import AdversarialDetector, DetectorConfig
-from src.utils.metrics import MetricsCalculator, RetrievalEvaluator, DetectionEvaluator
-from src.utils.visualization import ExperimentVisualizer
-from src.utils.config import ConfigManager
+from .models.clip_model import CLIPModel
+from .text_augment import TextAugmenter, TextAugmentConfig
+from .retrieval import MultiModalRetriever, RetrievalConfig
+from .sd_ref import SDReferenceGenerator, SDReferenceConfig
+from .detector import AdversarialDetector, DetectorConfig
+from .utils.metrics import MetricsCalculator, RetrievalEvaluator, DetectionEvaluator
+from .utils.visualization import ExperimentVisualizer
+from .utils.config import ConfigManager
 import warnings
 
 logger = logging.getLogger(__name__)
@@ -397,15 +397,25 @@ class MultiModalDetectionPipeline:
         
         try:
             # 使用原始文本进行检索
-            retrieval_result = self.retriever.retrieve_images_by_text(
+            retrieved_paths, retrieval_scores = self.retriever.retrieve_images_by_text(
                 result.original_text,
                 top_k=5
             )
             
-            if retrieval_result:
-                result.retrieved_images = retrieval_result.get('images', [])
-                result.retrieved_texts = retrieval_result.get('texts', [])
-                result.retrieval_scores = retrieval_result.get('scores', [])
+            if retrieved_paths:
+                # 加载检索到的图像
+                retrieved_images = []
+                for path in retrieved_paths:
+                    try:
+                        img = Image.open(path).convert('RGB')
+                        retrieved_images.append(img)
+                    except Exception as e:
+                        logger.warning(f"无法加载图像 {path}: {e}")
+                        continue
+                
+                result.retrieved_images = retrieved_images
+                result.retrieved_texts = retrieved_paths  # 暂时使用路径作为文本
+                result.retrieval_scores = retrieval_scores
             
             result.retrieval_time = time.time() - start_time
             

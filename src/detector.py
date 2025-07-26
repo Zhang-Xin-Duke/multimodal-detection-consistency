@@ -14,10 +14,9 @@ import json
 import time
 from PIL import Image
 from sklearn.metrics import roc_curve, auc
-from src.models.clip_model import CLIPModel, CLIPConfig
-from src.text_augment import TextAugmenter, TextAugmentConfig
-from src.sd_ref import SDReferenceGenerator, SDReferenceConfig
-from src.utils.metrics import SimilarityMetrics, DetectionEvaluator
+from .models.clip_model import CLIPModel, CLIPConfig
+
+from .utils.metrics import SimilarityMetrics, DetectionEvaluator
 import warnings
 from enum import Enum
 
@@ -159,6 +158,8 @@ class DetectorConfig:
             self.detection_methods = ['text_variants', 'sd_reference', 'consistency']
 
 
+from functools import lru_cache
+
 class AdversarialDetector:
     """对抗性检测器"""
     
@@ -171,18 +172,9 @@ class AdversarialDetector:
         """
         self.config = config
         
-        # 初始化CLIP模型
-        self.clip_model = self._initialize_clip_model()
-        
-        # 初始化文本增强器
+        self.clip_model = None
         self.text_augmenter = None
-        if self.config.use_text_variants:
-            self.text_augmenter = self._initialize_text_augmenter()
-        
-        # 初始化SD参考生成器
         self.sd_generator = None
-        if self.config.use_sd_reference:
-            self.sd_generator = self._initialize_sd_generator()
         
         # 相似性计算器
         self.similarity_metrics = SimilarityMetrics()
@@ -204,7 +196,12 @@ class AdversarialDetector:
         
         logger.info("对抗性检测器初始化完成")
     
-    def _initialize_clip_model(self) -> CLIPModel:
+    def _get_clip_model(self) -> CLIPModel:
+        if self.clip_model is None:
+            self.clip_model = self._initialize_clip_model(self.config.clip_model, self.config.device)
+        return self.clip_model
+
+    def _initialize_clip_model(self, model_name: str, device: str) -> CLIPModel:
         """
         初始化CLIP模型
         
@@ -213,12 +210,12 @@ class AdversarialDetector:
         """
         try:
             clip_config = CLIPConfig(
-                model_name=self.config.clip_model,
-                device=self.config.device
+                model_name=model_name,
+                device=device
             )
             
             clip_model = CLIPModel(clip_config)
-            logger.info(f"CLIP模型初始化完成: {self.config.clip_model}")
+            logger.info(f"CLIP模型初始化完成: {model_name}")
             
             return clip_model
             
@@ -226,7 +223,16 @@ class AdversarialDetector:
             logger.error(f"CLIP模型初始化失败: {e}")
             raise
     
-    def _initialize_text_augmenter(self) -> Optional[TextAugmenter]:
+    def _get_text_augmenter(self):
+        if self.text_augmenter is None:
+            if self.config.use_text_variants:
+                self.text_augmenter = self._initialize_text_augmenter(
+                    self.config.num_text_variants,
+                    self.config.text_similarity_threshold
+                )
+        return self.text_augmenter
+
+    def _initialize_text_augmenter(self, num_variants: int, similarity_threshold: float) -> Optional['TextAugmenter']:
         """
         初始化文本增强器
         
@@ -234,12 +240,16 @@ class AdversarialDetector:
             文本增强器实例
         """
         try:
-            augment_config = TextAugmentConfig(
-                num_variants=self.config.num_text_variants,
-                similarity_threshold=self.config.text_similarity_threshold
-            )
+            from src.text_augment import TextAugmenter, TextAugmentConfig
+            from .models import QwenModel, QwenConfig, CLIPModel, CLIPConfig
+            from .utils.config import get_qwen_cache_dir
             
-            text_augmenter = TextAugmenter(augment_config)
+            qwen_config = QwenConfig(cache_dir=get_qwen_cache_dir())  # 使用统一的缓存目录配置
+            clip_config = CLIPConfig(model_name=self.config.clip_model, device=self.config.device)
+            text_augment_config = TextAugmentConfig(num_variants=num_variants, similarity_threshold=similarity_threshold)
+            qwen_model = QwenModel(qwen_config)
+            clip_model_for_augmenter = CLIPModel(clip_config)
+            text_augmenter = TextAugmenter(qwen_model, clip_model_for_augmenter, text_augment_config)
             logger.info("文本增强器初始化完成")
             
             return text_augmenter
@@ -248,7 +258,16 @@ class AdversarialDetector:
             logger.warning(f"文本增强器初始化失败: {e}")
             return None
     
-    def _initialize_sd_generator(self) -> Optional[SDReferenceGenerator]:
+    def _get_sd_generator(self):
+        if self.sd_generator is None:
+            if self.config.use_sd_reference:
+                self.sd_generator = self._initialize_sd_generator(
+                    self.config.num_reference_images,
+                    self.config.device
+                )
+        return self.sd_generator
+
+    def _initialize_sd_generator(self, num_images_per_prompt: int, device: str) -> Optional['SDReferenceGenerator']:
         """
         初始化SD参考生成器
         
@@ -256,12 +275,9 @@ class AdversarialDetector:
             SD参考生成器实例
         """
         try:
-            sd_config = SDReferenceConfig(
-                num_images_per_prompt=self.config.num_reference_images,
-                device=self.config.device
-            )
-            
-            sd_generator = SDReferenceGenerator(sd_config)
+            from src.sd_ref import SDReferenceGenerator, SDReferenceConfig
+            sd_ref_config = SDReferenceConfig(num_images_per_prompt=num_images_per_prompt, device=device)
+            sd_generator = SDReferenceGenerator(sd_ref_config)
             logger.info("SD参考生成器初始化完成")
             
             return sd_generator
@@ -300,14 +316,14 @@ class AdversarialDetector:
             detection_details = {}
             
             # 1. 文本变体检测
-            if 'text_variants' in methods and self.text_augmenter is not None:
+            if 'text_variants' in methods and self._get_text_augmenter() is not None:
                 score, details = self._detect_by_text_variants(image, text)
                 detection_scores['text_variants'] = score
                 detection_details['text_variants'] = details
                 self.detection_stats['method_usage']['text_variants'] += 1
             
             # 2. SD参考检测
-            if 'sd_reference' in methods and self.sd_generator is not None:
+            if 'sd_reference' in methods and self._get_sd_generator() is not None:
                 score, details = self._detect_by_sd_reference(image, text)
                 detection_scores['sd_reference'] = score
                 detection_details['sd_reference'] = details
@@ -380,20 +396,20 @@ class AdversarialDetector:
         """
         try:
             # 生成文本变体
-            variants = self.text_augmenter.generate_variants(text)
+            variants = self._get_text_augmenter().generate_variants(text)
             
             if not variants:
                 return 0.0, {'error': '无法生成文本变体'}
             
             # 计算原始文本与图像的相似性
-            original_similarity = self.clip_model.get_text_image_similarity(
+            original_similarity = self._get_clip_model().get_text_image_similarity(
                 text, image
             ).item()
             
             # 计算变体与图像的相似性
             variant_similarities = []
             for variant in variants:
-                similarity = self.clip_model.get_text_image_similarity(
+                similarity = self._get_clip_model().get_text_image_similarity(
                     variant, image
                 ).item()
                 variant_similarities.append(similarity)
@@ -442,7 +458,7 @@ class AdversarialDetector:
         """
         try:
             # 生成参考图像
-            ref_result = self.sd_generator.generate_reference_images(
+            ref_result = self._get_sd_generator().generate_reference_images(
                 text, 
                 num_images=self.config.num_reference_images
             )
@@ -498,12 +514,12 @@ class AdversarialDetector:
         """
         try:
             # 计算图像-文本相似性
-            image_text_similarity = self.clip_model.get_text_image_similarity(text, image).item()
+            image_text_similarity = self._get_clip_model().get_text_image_similarity(text, image).item()
             
             # 计算一致性分数
             consistency_score = self.similarity_metrics.compute_consistency_score(
                 np.array([image_text_similarity]),
-                np.array([image_text_similarity])
+                aggregation_method='mean'
             )
             
             # 检测分数：低一致性表示高对抗性概率
@@ -536,7 +552,7 @@ class AdversarialDetector:
                 return image.cpu().numpy().flatten()
             else:
                 # PIL图像，使用CLIP编码
-                features = self.clip_model.encode_image(image)
+                features = self._get_clip_model().encode_image(image)
                 return features.flatten()
                 
         except Exception as e:
@@ -625,6 +641,9 @@ class AdversarialDetector:
         Returns:
             检测结果列表
         """
+        # This is a placeholder for a batch-capable detection.
+        # The current implementation processes one by one.
+        # For actual batch processing, you would need to adapt the methods below.
         results = []
         
         for image, text in zip(images, texts):

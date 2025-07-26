@@ -22,6 +22,7 @@ models:
     temperature: 0.7
     top_p: 0.9
     cache_dir: "./cache/qwen"
+    use_flash_attention: false
   
   stable_diffusion:
     model_name: "runwayml/stable-diffusion-v1-5"
@@ -171,6 +172,7 @@ experiment:
   # 硬件配置
   hardware:
     use_cuda: true
+    force_cuda: true  # 强制使用CUDA
     cuda_devices: [0, 1, 2, 3, 4, 5]  # RTX 4090 x6
     mixed_precision: true
     compile_models: true

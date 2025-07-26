@@ -444,6 +444,28 @@ class SimilarityMetrics:
     """相似度指标"""
     
     @staticmethod
+    def compute_cosine_similarity(embedding1: np.ndarray, 
+                                 embedding2: np.ndarray) -> float:
+        """
+        计算两个嵌入向量的余弦相似度
+        
+        Args:
+            embedding1: 嵌入向量1
+            embedding2: 嵌入向量2
+            
+        Returns:
+            余弦相似度值
+        """
+        # 确保输入是二维数组
+        if embedding1.ndim == 1:
+            embedding1 = embedding1.reshape(1, -1)
+        if embedding2.ndim == 1:
+            embedding2 = embedding2.reshape(1, -1)
+            
+        similarity_matrix = cosine_similarity(embedding1, embedding2)
+        return float(similarity_matrix[0, 0])
+    
+    @staticmethod
     def cosine_similarity_matrix(embeddings1: np.ndarray, 
                                 embeddings2: np.ndarray) -> np.ndarray:
         """

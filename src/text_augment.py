@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 import json
 from sklearn.metrics.pairwise import cosine_similarity
-from models import QwenModel, QwenConfig, CLIPModel, CLIPConfig
+from .models import QwenModel, QwenConfig, CLIPModel, CLIPConfig
 import nltk
 from nltk.corpus import wordnet
 from nltk.tokenize import word_tokenize
@@ -56,6 +56,7 @@ class TextAugmentConfig:
     paraphrase_model: str = "Qwen/Qwen2-7B-Instruct"
     paraphrase_temperature: float = 0.8
     paraphrase_max_length: int = 512
+    use_flash_attention: bool = False
     
     # 回译
     back_translation_languages: List[str] = None
@@ -78,6 +79,8 @@ class TextAugmentConfig:
             self.back_translation_languages = ['zh', 'fr', 'de', 'es']
 
 
+from functools import lru_cache
+
 class TextAugmenter:
     """文本增强器"""
     
@@ -89,10 +92,6 @@ class TextAugmenter:
             config: 文本增强配置
         """
         self.config = config
-        
-        # 初始化模型
-        self.qwen_model = None
-        self.clip_model = None
         
         # 缓存
         self.variant_cache = {}
@@ -113,10 +112,13 @@ class TextAugmenter:
         """
         try:
             # 初始化Qwen模型用于释义生成
+            from .utils.config import get_qwen_cache_dir
             qwen_config = QwenConfig(
                 model_name=self.config.paraphrase_model,
                 temperature=self.config.paraphrase_temperature,
-                max_length=self.config.paraphrase_max_length
+                max_length=self.config.paraphrase_max_length,
+                use_flash_attention=self.config.use_flash_attention,
+                cache_dir=get_qwen_cache_dir()  # 使用统一的缓存目录配置
             )
             self.qwen_model = QwenModel(qwen_config)
             
@@ -313,25 +315,22 @@ class TextAugmenter:
         Returns:
             释义变体列表
         """
+        # This is a placeholder for a batch-capable paraphrase generation.
+        # The current implementation processes one by one.
+        # For actual batch processing, you would need to adapt the model interaction.
         try:
             if self.qwen_model is None:
                 return []
-            
-            # 构建释义提示
-            prompt = f"请为以下文本生成{self.config.num_variants}个不同的表达方式，保持原意不变：\n\n{text}\n\n请用不同的词汇和句式重新表达，每个变体占一行："
-            
-            # 生成释义
-            generated_text = self.qwen_model.generate_text(
-                prompt,
-                max_new_tokens=self.config.paraphrase_max_length,
-                temperature=self.config.paraphrase_temperature
-            )[0]
-            
-            # 解析生成的变体
-            variants = self._parse_generated_variants(generated_text, text)
-            
+
+            prompt = f"请为以下文本生成{self.config.num_variants}个不同的表达方式，保持原意不变：\n\n{text}\n\n请用不同的词汇和句式重新表达，每个变体占一行，并以'- '开头："
+
+            # This part should be batched.
+            generated_text = self.qwen_model.generate_text([prompt])[0]
+
+            variants = [v.strip() for v in generated_text.split('- ') if v.strip()] 
+
             return variants
-            
+
         except Exception as e:
             logger.warning(f"释义生成失败: {e}")
             return []
@@ -595,6 +594,7 @@ class TextAugmenter:
         Returns:
             变体列表的列表
         """
+        # TODO: 实现真正的批处理，特别是对于模型调用部分
         all_variants = []
         
         for text in texts:

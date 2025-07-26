@@ -16,8 +16,8 @@ import torch.nn.functional as F
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics.pairwise import cosine_similarity
 import random
-from src.models import CLIPModel, CLIPConfig
-from src.utils.metrics import SimilarityMetrics
+from ..models import CLIPModel, CLIPConfig
+from ..utils.metrics import SimilarityMetrics
 import warnings
 
 logger = logging.getLogger(__name__)
@@ -223,7 +223,7 @@ class HubnessAttacker:
             
             # 转换输入
             if isinstance(image, Image.Image):
-                image_tensor = self.clip_model.preprocess_image(image)
+                image_tensor = self.clip_model.preprocess(image).unsqueeze(0)
             else:
                 image_tensor = image
             
@@ -323,13 +323,18 @@ class HubnessAttacker:
             攻击结果
         """
         try:
+            # 确保image_tensor是叶子节点并需要梯度
+            image_tensor = image_tensor.clone().detach().requires_grad_(True)
+            
             # 随机初始化扰动
             if self.config.random_start:
                 noise = torch.randn_like(image_tensor) * self.config.epsilon * 0.1
                 image_tensor = image_tensor + noise
                 image_tensor = torch.clamp(image_tensor, self.config.clamp_min, self.config.clamp_max)
+                # 重新设置为叶子节点
+                image_tensor = image_tensor.clone().detach().requires_grad_(True)
             
-            original_image = image_tensor.clone()
+            original_image = image_tensor.clone().detach()
             
             # 优化器
             optimizer = torch.optim.SGD(
@@ -684,6 +689,22 @@ class HubnessAttacker:
                 'success': False,
                 'error': str(e)
             }
+    
+    def attack_single(self, image: Union[Image.Image, torch.Tensor], 
+                         text: str, 
+                         target_text: Optional[str] = None) -> Dict[str, Any]:
+        """
+        单个样本攻击（create_adversarial_hub的别名）
+        
+        Args:
+            image: 输入图像
+            text: 输入文本
+            target_text: 目标文本（用于targeted攻击）
+            
+        Returns:
+            攻击结果字典
+        """
+        return self.create_adversarial_hub(image, text, target_text)
     
     def batch_attack(self, images: List[Union[Image.Image, torch.Tensor]], 
                     texts: List[str], 

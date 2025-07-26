@@ -23,7 +23,10 @@ logger = logging.getLogger(__name__)
 # 设置中文字体和样式
 plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
-sns.set_style("whitegrid")
+try:
+    plt.style.use('seaborn-v0_8-whitegrid')
+except OSError:
+    plt.style.use('default')
 sns.set_palette("husl")
 
 
@@ -34,7 +37,7 @@ class PlotConfig:
     dpi: int = 300
     format: str = 'png'
     save_dir: str = './outputs/plots'
-    style: str = 'seaborn'
+    style: str = 'seaborn-v0_8-whitegrid'
     color_palette: str = 'husl'
     font_size: int = 12
     title_size: int = 14
@@ -56,7 +59,10 @@ class MetricsVisualizer:
         self.save_dir.mkdir(parents=True, exist_ok=True)
         
         # 设置样式
-        plt.style.use(self.config.style)
+        try:
+            plt.style.use(self.config.style)
+        except OSError:
+            plt.style.use('default')
         sns.set_palette(self.config.color_palette)
     
     def plot_retrieval_metrics(self, 

@@ -19,7 +19,7 @@ from . import retrieval
 from . import sd_ref
 from . import ref_bank
 from . import detector
-# 延迟导入pipeline以避免循环导入
+from . import pipeline
 
 # 导入子包
 from . import attacks
@@ -33,7 +33,7 @@ from .retrieval import MultiModalRetriever, RetrievalConfig
 from .sd_ref import SDReferenceGenerator, SDReferenceConfig
 from .ref_bank import ReferenceBank, ReferenceBankConfig
 from .detector import AdversarialDetector, DetectorConfig
-# 延迟导入pipeline类以避免循环导入
+from .pipeline import MultiModalDetectionPipeline, PipelineConfig
 
 # 导入工厂函数
 from .text_augment import create_text_augmenter
@@ -41,7 +41,7 @@ from .retrieval import create_retriever
 from .sd_ref import create_sd_reference_generator
 from .ref_bank import create_reference_bank
 from .detector import create_adversarial_detector
-# 延迟导入pipeline工厂函数以避免循环导入
+from .pipeline import create_detection_pipeline
 
 # 导入模型
 from .models import CLIPModel, CLIPConfig
@@ -71,6 +71,7 @@ __all__ = [
     "SDReferenceConfig",
     "ReferenceBankConfig",
     "DetectorConfig",
+    "PipelineConfig",
     "CLIPConfig",
     "HubnessAttackConfig",
     
@@ -80,6 +81,7 @@ __all__ = [
     "SDReferenceGenerator",
     "ReferenceBank",
     "AdversarialDetector",
+    "MultiModalDetectionPipeline",
     "CLIPModel",
     "HubnessAttacker",
     "DataValidator",
@@ -91,6 +93,7 @@ __all__ = [
     "create_sd_reference_generator",
     "create_reference_bank",
     "create_adversarial_detector",
+    "create_detection_pipeline",
     "create_clip_model",
     "create_hubness_attacker",
     "create_data_validator",
@@ -108,6 +111,7 @@ __all__ = [
     "sd_ref",
     "ref_bank",
     "detector",
+    "pipeline",
     "attacks",
     "models",
     "utils",

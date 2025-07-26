@@ -16,8 +16,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import DBSCAN
 import torch
-from models import CLIPModel, CLIPConfig
-from utils.metrics import SimilarityMetrics
+from ..models import CLIPModel, CLIPConfig
+from ..utils.metrics import SimilarityMetrics
 import warnings
 
 logger = logging.getLogger(__name__)
