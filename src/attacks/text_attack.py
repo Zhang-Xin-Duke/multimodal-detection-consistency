@@ -4,10 +4,12 @@
 """
 
 import torch
+import torch.nn as nn
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Union, Any, Set
 from dataclasses import dataclass
 import logging
+import time
 import re
 import random
 from collections import defaultdict
@@ -16,6 +18,7 @@ from nltk.corpus import wordnet, stopwords
 from nltk.tokenize import word_tokenize
 from nltk.tag import pos_tag
 import string
+from tqdm import tqdm
 
 # 确保NLTK数据已下载
 try:
@@ -47,6 +50,19 @@ class TextAttackConfig:
     
     # 攻击方法
     attack_method: str = 'textfooler'  # 'textfooler', 'bert_attack', 'synonym_replacement'
+    
+    # 批处理和多GPU优化
+    enable_multi_gpu: bool = False    # 是否启用多GPU并行
+    gpu_ids: Optional[List[int]] = None  # GPU设备ID列表，None表示使用所有可用GPU
+    batch_size: int = 32              # 批处理大小
+    batch_size_per_gpu: int = 8       # 每个GPU的批处理大小
+    num_workers: int = 4              # 数据加载器工作进程数
+    
+    # 内存优化
+    gradient_accumulation_steps: int = 1  # 梯度累积步数
+    mixed_precision: bool = True      # 是否使用混合精度训练
+    pin_memory: bool = True           # 是否使用固定内存
+    gradient_clip_value: float = 1.0  # 梯度裁剪阈值
     
     # TextFooler参数
     max_candidates: int = 50          # 最大候选词数量
@@ -80,9 +96,13 @@ class TextAttacker:
             clip_model: CLIP模型实例
             config: 攻击配置
         """
-        self.clip_model = clip_model
         self.config = config
-        self.device = torch.device(config.device)
+        
+        # 设置设备和多GPU
+        self._setup_devices()
+        
+        # 初始化CLIP模型
+        self._initialize_clip_model(clip_model)
         
         # 设置随机种子
         random.seed(config.random_seed)
@@ -104,7 +124,30 @@ class TextAttacker:
         self.cache = {} if config.enable_cache else None
         self.synonym_cache = {}  # 同义词缓存
         
-        logging.info(f"文本攻击器初始化完成，方法: {config.attack_method}")
+        logging.info(f"文本攻击器初始化完成，方法: {config.attack_method}，设备: {self.device}")
+    
+    def _setup_devices(self):
+        """设置设备和多GPU配置"""
+        if self.config.enable_multi_gpu and torch.cuda.device_count() > 1:
+            if self.config.gpu_ids is None:
+                self.config.gpu_ids = list(range(torch.cuda.device_count()))
+            
+            self.device = torch.device(f'cuda:{self.config.gpu_ids[0]}')
+            self.gpu_ids = self.config.gpu_ids
+            logging.info(f"启用多GPU模式，使用GPU: {self.gpu_ids}")
+        else:
+            self.device = torch.device(self.config.device)
+            self.gpu_ids = None
+            logging.info(f"使用单GPU模式，设备: {self.device}")
+    
+    def _initialize_clip_model(self, clip_model):
+        """初始化CLIP模型"""
+        self.clip_model = clip_model.to(self.device)
+        
+        # 多GPU封装
+        if self.config.enable_multi_gpu and self.gpu_ids and len(self.gpu_ids) > 1:
+            self.clip_model = nn.DataParallel(self.clip_model, device_ids=self.gpu_ids)
+            logging.info(f"CLIP模型已封装为DataParallel，使用GPU: {self.gpu_ids}")
     
     def attack(self, text: str, 
                image: Optional[torch.Tensor] = None,
@@ -478,7 +521,7 @@ class TextAttacker:
                     images: Optional[List[torch.Tensor]] = None,
                     target_texts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
-        批量文本攻击
+        真正的批量文本攻击实现
         
         Args:
             texts: 文本列表
@@ -488,16 +531,487 @@ class TextAttacker:
         Returns:
             攻击结果列表
         """
+        logging.info(f"开始批量文本攻击 {len(texts)} 个样本")
+        start_time = time.time()
+        
+        # 分批处理以适应GPU内存
+        all_results = []
+        total_batches = (len(texts) + self.config.batch_size - 1) // self.config.batch_size
+        
+        with tqdm(total=total_batches, desc="文本攻击批量处理进度") as pbar:
+            for batch_idx in range(0, len(texts), self.config.batch_size):
+                batch_end = min(batch_idx + self.config.batch_size, len(texts))
+                
+                batch_texts = texts[batch_idx:batch_end]
+                batch_images = images[batch_idx:batch_end] if images else None
+                batch_targets = target_texts[batch_idx:batch_end] if target_texts else None
+                
+                # 执行批量攻击
+                batch_results = self._batch_text_attack(
+                    batch_texts, batch_images, batch_targets
+                )
+                all_results.extend(batch_results)
+                
+                # 更新进度条
+                pbar.update(1)
+                pbar.set_postfix({
+                    '已处理': f'{batch_end}/{len(texts)}',
+                    '成功率': f'{sum(r["success"] for r in all_results) / len(all_results):.2%}'
+                })
+        
+        # 更新攻击统计
+        successful_attacks = sum(1 for r in all_results if r['success'])
+        self.attack_stats['total_attacks'] += len(texts)
+        self.attack_stats['successful_attacks'] += successful_attacks
+        
+        total_time = time.time() - start_time
+        logging.info(f"批量文本攻击完成，总时间: {total_time:.2f}s，成功率: {successful_attacks/len(texts):.2%}")
+        
+        return all_results
+    
+    def _batch_text_attack(self, batch_texts: List[str],
+                          batch_images: Optional[List[torch.Tensor]] = None,
+                          batch_targets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        执行批量文本攻击的核心逻辑
+        
+        Args:
+            batch_texts: 批量文本列表
+            batch_images: 批量图像列表（可选）
+            batch_targets: 批量目标文本列表（可选）
+        
+        Returns:
+            批量攻击结果列表
+        """
+        batch_size = len(batch_texts)
         results = []
         
-        for i, text in enumerate(texts):
-            image = images[i] if images else None
-            target_text = target_texts[i] if target_texts else None
+        # 编码原始文本特征
+        with torch.no_grad():
+            if hasattr(self.clip_model, 'tokenize'):
+                text_tokens = torch.cat([self.clip_model.tokenize(text).to(self.device) 
+                                       for text in batch_texts])
+                original_text_features = self.clip_model.encode_text(text_tokens)
+            else:
+                # 如果没有tokenize方法，使用encode_text直接编码
+                original_text_features = self.clip_model.encode_text(batch_texts)
             
-            result = self.attack(text, image, target_text)
+            original_text_features = original_text_features / original_text_features.norm(dim=-1, keepdim=True)
+            
+            # 编码目标文本特征（如果有）
+            if batch_targets:
+                if hasattr(self.clip_model, 'tokenize'):
+                    target_tokens = torch.cat([self.clip_model.tokenize(target).to(self.device) 
+                                             for target in batch_targets])
+                    target_features = self.clip_model.encode_text(target_tokens)
+                else:
+                    target_features = self.clip_model.encode_text(batch_targets)
+                target_features = target_features / target_features.norm(dim=-1, keepdim=True)
+            else:
+                target_features = None
+        
+        # 编码图像特征（如果有）
+        if batch_images:
+            with torch.no_grad():
+                image_tensors = torch.stack([img.to(self.device) for img in batch_images])
+                image_features = self.clip_model.encode_image(image_tensors)
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+        else:
+            image_features = None
+        
+        # 使用混合精度训练
+        if self.config.mixed_precision:
+            scaler = torch.cuda.amp.GradScaler()
+        else:
+            scaler = None
+        
+        # 对每个文本执行攻击
+        for i in range(batch_size):
+            text = batch_texts[i]
+            original_feature = original_text_features[i:i+1]
+            target_feature = target_features[i:i+1] if target_features is not None else None
+            image_feature = image_features[i:i+1] if image_features is not None else None
+            
+            # 执行具体的攻击方法
+            if self.config.attack_method == 'textfooler':
+                result = self._batch_textfooler_attack(
+                    text, original_feature, target_feature, image_feature
+                )
+            elif self.config.attack_method == 'synonym_replacement':
+                result = self._batch_synonym_replacement_attack(
+                    text, original_feature, target_feature, image_feature
+                )
+            else:
+                # 回退到单个攻击
+                image = batch_images[i] if batch_images else None
+                target = batch_targets[i] if batch_targets else None
+                result = self.attack(text, image, target)
+            
             results.append(result)
         
         return results
+    
+    def _batch_textfooler_attack(self, text: str, 
+                                original_feature: torch.Tensor,
+                                target_feature: Optional[torch.Tensor] = None,
+                                image_feature: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        """
+        批量TextFooler攻击实现
+        
+        Args:
+            text: 原始文本
+            original_feature: 原始文本特征
+            target_feature: 目标文本特征（可选）
+            image_feature: 图像特征（可选）
+        
+        Returns:
+            攻击结果
+        """
+        # 分词和词性标注
+        tokens = word_tokenize(text.lower())
+        pos_tags = pos_tag(tokens)
+        
+        # 计算词重要性
+        word_importance = self._calculate_word_importance_batch(
+            text, tokens, original_feature, target_feature, image_feature
+        )
+        
+        # 按重要性排序
+        sorted_indices = sorted(range(len(tokens)), 
+                              key=lambda i: word_importance[i], reverse=True)
+        
+        # 初始化攻击信息
+        attack_info = {
+            'original_text': text,
+            'adversarial_text': text,
+            'success': False,
+            'replacements': [],
+            'iterations': 0,
+            'similarity_drop': 0.0,
+            'perturbation_rate': 0.0
+        }
+        
+        adversarial_text = text
+        replaced_words = []
+        max_replacements = min(len(tokens), self.config.max_word_replacements)
+        
+        # 迭代攻击
+        for iteration in range(self.config.max_iterations):
+            attack_info['iterations'] = iteration + 1
+            best_replacement = None
+            best_score = float('-inf')
+            
+            # 尝试替换每个重要词
+            for idx in sorted_indices[:max_replacements]:
+                if idx in [r['index'] for r in replaced_words]:
+                    continue  # 跳过已替换的词
+                
+                word = tokens[idx]
+                pos = pos_tags[idx][1]
+                
+                # 跳过停用词和标点符号
+                if (word in self.stop_words or 
+                    word in string.punctuation or 
+                    len(word) < 2):
+                    continue
+                
+                # 获取候选同义词
+                candidates = self._get_synonyms(word, pos)
+                
+                # 评估每个候选词
+                for candidate in candidates[:self.config.max_candidates]:
+                    if candidate == word:
+                        continue
+                    
+                    # 生成候选文本
+                    candidate_text = self._replace_word_in_text(
+                        adversarial_text, word, candidate
+                    )
+                    
+                    # 计算攻击效果
+                    score = self._evaluate_candidate_batch(
+                        candidate_text, original_feature, target_feature, image_feature
+                    )
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_replacement = {
+                            'index': idx,
+                            'original': word,
+                            'replacement': candidate,
+                            'score': score,
+                            'text': candidate_text
+                        }
+            
+            # 应用最佳替换
+            if best_replacement and best_score > self.config.attack_threshold:
+                adversarial_text = best_replacement['text']
+                replaced_words.append(best_replacement)
+                attack_info['replacements'] = replaced_words
+                attack_info['adversarial_text'] = adversarial_text
+                
+                # 检查攻击成功
+                if self._check_attack_success_batch(
+                    adversarial_text, original_feature, target_feature, image_feature
+                ):
+                    attack_info['success'] = True
+                    break
+            else:
+                break  # 没有找到有效替换
+        
+        # 计算最终指标
+        attack_info['similarity_drop'] = self._calculate_similarity_drop_batch(
+            text, adversarial_text, original_feature
+        )
+        attack_info['perturbation_rate'] = len(replaced_words) / len(tokens)
+        
+        return attack_info
+    
+    def _batch_synonym_replacement_attack(self, text: str,
+                                         original_feature: torch.Tensor,
+                                         target_feature: Optional[torch.Tensor] = None,
+                                         image_feature: Optional[torch.Tensor] = None) -> Dict[str, Any]:
+        """
+        批量同义词替换攻击实现
+        
+        Args:
+            text: 原始文本
+            original_feature: 原始文本特征
+            target_feature: 目标文本特征（可选）
+            image_feature: 图像特征（可选）
+        
+        Returns:
+            攻击结果
+        """
+        # 分词
+        tokens = word_tokenize(text.lower())
+        pos_tags = pos_tag(tokens)
+        
+        # 随机选择要替换的词
+        replaceable_indices = []
+        for i, (word, pos) in enumerate(pos_tags):
+            if (word not in self.stop_words and 
+                word not in string.punctuation and 
+                len(word) >= 2):
+                replaceable_indices.append(i)
+        
+        if not replaceable_indices:
+            return {
+                'original_text': text,
+                'adversarial_text': text,
+                'success': False,
+                'replacements': [],
+                'iterations': 1,
+                'similarity_drop': 0.0,
+                'perturbation_rate': 0.0
+            }
+        
+        # 随机选择替换数量
+        num_replacements = min(
+            len(replaceable_indices),
+            random.randint(1, self.config.max_word_replacements)
+        )
+        
+        selected_indices = random.sample(replaceable_indices, num_replacements)
+        
+        # 执行替换
+        adversarial_text = text
+        replaced_words = []
+        
+        for idx in selected_indices:
+            word = tokens[idx]
+            pos = pos_tags[idx][1]
+            
+            # 获取同义词
+            synonyms = self._get_synonyms(word, pos)
+            if synonyms:
+                replacement = random.choice(synonyms[:self.config.max_candidates])
+                adversarial_text = self._replace_word_in_text(
+                    adversarial_text, word, replacement
+                )
+                replaced_words.append({
+                    'index': idx,
+                    'original': word,
+                    'replacement': replacement
+                })
+        
+        # 检查攻击成功
+        success = self._check_attack_success_batch(
+            adversarial_text, original_feature, target_feature, image_feature
+        )
+        
+        # 计算指标
+        similarity_drop = self._calculate_similarity_drop_batch(
+            text, adversarial_text, original_feature
+        )
+        
+        return {
+            'original_text': text,
+            'adversarial_text': adversarial_text,
+            'success': success,
+            'replacements': replaced_words,
+            'iterations': 1,
+            'similarity_drop': similarity_drop,
+            'perturbation_rate': len(replaced_words) / len(tokens)
+        }
+    
+    def _calculate_word_importance_batch(self, text: str, tokens: List[str],
+                                        original_feature: torch.Tensor,
+                                        target_feature: Optional[torch.Tensor] = None,
+                                        image_feature: Optional[torch.Tensor] = None) -> List[float]:
+        """
+        批量计算词重要性
+        
+        Args:
+            text: 原始文本
+            tokens: 分词结果
+            original_feature: 原始文本特征
+            target_feature: 目标文本特征（可选）
+            image_feature: 图像特征（可选）
+        
+        Returns:
+            词重要性列表
+        """
+        importance_scores = []
+        
+        for i, token in enumerate(tokens):
+            # 创建删除当前词的文本
+            masked_tokens = tokens[:i] + ['[MASK]'] + tokens[i+1:]
+            masked_text = ' '.join(masked_tokens)
+            
+            # 编码掩码文本
+            with torch.no_grad():
+                if hasattr(self.clip_model, 'tokenize'):
+                    masked_tokens_tensor = self.clip_model.tokenize(masked_text).to(self.device)
+                    masked_feature = self.clip_model.encode_text(masked_tokens_tensor)
+                else:
+                    masked_feature = self.clip_model.encode_text([masked_text])
+                masked_feature = masked_feature / masked_feature.norm(dim=-1, keepdim=True)
+            
+            # 计算特征差异
+            if target_feature is not None:
+                # 目标攻击：计算与目标的相似度变化
+                original_sim = torch.cosine_similarity(original_feature, target_feature)
+                masked_sim = torch.cosine_similarity(masked_feature, target_feature)
+                importance = (masked_sim - original_sim).item()
+            elif image_feature is not None:
+                # 图像-文本攻击：计算与图像的相似度变化
+                original_sim = torch.cosine_similarity(original_feature, image_feature)
+                masked_sim = torch.cosine_similarity(masked_feature, image_feature)
+                importance = (original_sim - masked_sim).item()
+            else:
+                # 无目标攻击：计算特征变化幅度
+                importance = torch.norm(original_feature - masked_feature).item()
+            
+            importance_scores.append(importance)
+        
+        return importance_scores
+    
+    def _evaluate_candidate_batch(self, candidate_text: str,
+                                 original_feature: torch.Tensor,
+                                 target_feature: Optional[torch.Tensor] = None,
+                                 image_feature: Optional[torch.Tensor] = None) -> float:
+        """
+        批量评估候选文本的攻击效果
+        
+        Args:
+            candidate_text: 候选文本
+            original_feature: 原始文本特征
+            target_feature: 目标文本特征（可选）
+            image_feature: 图像特征（可选）
+        
+        Returns:
+            攻击效果分数
+        """
+        # 编码候选文本
+        with torch.no_grad():
+            if hasattr(self.clip_model, 'tokenize'):
+                candidate_tokens = self.clip_model.tokenize(candidate_text).to(self.device)
+                candidate_feature = self.clip_model.encode_text(candidate_tokens)
+            else:
+                candidate_feature = self.clip_model.encode_text([candidate_text])
+            candidate_feature = candidate_feature / candidate_feature.norm(dim=-1, keepdim=True)
+        
+        if target_feature is not None:
+            # 目标攻击：最大化与目标的相似度
+            score = torch.cosine_similarity(candidate_feature, target_feature).item()
+        elif image_feature is not None:
+            # 图像-文本攻击：最小化与图像的相似度
+            score = -torch.cosine_similarity(candidate_feature, image_feature).item()
+        else:
+            # 无目标攻击：最大化与原始文本的差异
+            score = -torch.cosine_similarity(candidate_feature, original_feature).item()
+        
+        return score
+    
+    def _check_attack_success_batch(self, adversarial_text: str,
+                                   original_feature: torch.Tensor,
+                                   target_feature: Optional[torch.Tensor] = None,
+                                   image_feature: Optional[torch.Tensor] = None) -> bool:
+        """
+        批量检查攻击是否成功
+        
+        Args:
+            adversarial_text: 对抗文本
+            original_feature: 原始文本特征
+            target_feature: 目标文本特征（可选）
+            image_feature: 图像特征（可选）
+        
+        Returns:
+            是否攻击成功
+        """
+        # 编码对抗文本
+        with torch.no_grad():
+            if hasattr(self.clip_model, 'tokenize'):
+                adv_tokens = self.clip_model.tokenize(adversarial_text).to(self.device)
+                adv_feature = self.clip_model.encode_text(adv_tokens)
+            else:
+                adv_feature = self.clip_model.encode_text([adversarial_text])
+            adv_feature = adv_feature / adv_feature.norm(dim=-1, keepdim=True)
+        
+        if target_feature is not None:
+            # 目标攻击：检查与目标的相似度是否超过阈值
+            target_sim = torch.cosine_similarity(adv_feature, target_feature).item()
+            return target_sim > self.config.success_threshold
+        elif image_feature is not None:
+            # 图像-文本攻击：检查与图像的相似度是否下降
+            original_sim = torch.cosine_similarity(original_feature, image_feature).item()
+            adv_sim = torch.cosine_similarity(adv_feature, image_feature).item()
+            return (original_sim - adv_sim) > self.config.success_threshold
+        else:
+            # 无目标攻击：检查与原始文本的相似度是否下降
+            similarity = torch.cosine_similarity(adv_feature, original_feature).item()
+            return similarity < (1.0 - self.config.success_threshold)
+    
+    def _calculate_similarity_drop_batch(self, original_text: str, 
+                                        adversarial_text: str,
+                                        original_feature: torch.Tensor) -> float:
+        """
+        批量计算相似度下降
+        
+        Args:
+            original_text: 原始文本
+            adversarial_text: 对抗文本
+            original_feature: 原始文本特征
+        
+        Returns:
+            相似度下降值
+        """
+        if original_text == adversarial_text:
+            return 0.0
+        
+        # 编码对抗文本
+        with torch.no_grad():
+            if hasattr(self.clip_model, 'tokenize'):
+                adv_tokens = self.clip_model.tokenize(adversarial_text).to(self.device)
+                adv_feature = self.clip_model.encode_text(adv_tokens)
+            else:
+                adv_feature = self.clip_model.encode_text([adversarial_text])
+            adv_feature = adv_feature / adv_feature.norm(dim=-1, keepdim=True)
+        
+        # 计算相似度
+        similarity = torch.cosine_similarity(original_feature, adv_feature).item()
+        return 1.0 - similarity
     
     def _get_cache_key(self, text: str, target_text: Optional[str] = None) -> str:
         """

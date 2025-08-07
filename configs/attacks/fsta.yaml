@@ -1,0 +1,99 @@
+# FSTA (Feature-Space Targeted Attack) 攻击配置
+# 特征空间目标攻击
+
+attack:
+  name: "fsta"
+  type: "feature_space_targeted_attack"
+  
+  # 攻击参数
+  parameters:
+    # 基础参数
+    epsilon: 0.031          # 扰动幅度 (8/255)
+    alpha: 0.008            # 步长 (2/255)
+    num_iter: 20            # 迭代次数
+    
+    # FSTA特定参数
+    feature_layer: "penultimate"  # 目标特征层: penultimate, intermediate
+    target_feature_method: "centroid"  # 目标特征选择: centroid, nearest, farthest
+    feature_distance_metric: "cosine"  # 特征距离度量: cosine, euclidean, manhattan
+    
+    # 目标设置
+    targeted: true          # FSTA通常是目标攻击
+    target_selection: "random"  # 目标选择: random, semantic, adversarial
+    num_targets: 10         # 目标数量
+    
+    # 特征空间参数
+    feature_weight: 1.0     # 特征损失权重
+    output_weight: 0.1      # 输出损失权重
+    diversity_weight: 0.05  # 多样性损失权重
+    
+    # 优化参数
+    momentum: 0.9           # 动量系数
+    decay_factor: 0.99      # 衰减因子
+    learning_rate: 0.01     # 学习率
+    
+    # 约束参数
+    norm_type: "inf"        # 范数类型: inf, 2
+    clamp_min: 0.0          # 像素值下界
+    clamp_max: 1.0          # 像素值上界
+    
+    # 高级参数
+    adaptive_step_size: true  # 自适应步长
+    gradient_clipping: true   # 梯度裁剪
+    clip_value: 1.0          # 裁剪值
+    
+# 批处理配置
+batch:
+  size: 32
+  accumulation_steps: 1
+  
+# 多GPU配置
+multi_gpu:
+  enabled: true
+  gpu_ids: [0, 1, 2, 3, 4, 5]
+  batch_size_per_gpu: 8
+  sync_bn: false
+
+# 评估配置 特征匹配参数
+    feature_matching_threshold: 0.8  # 特征匹配阈值
+    max_feature_distance: 2.0        # 最大特征距离
+    
+  # 评估设置
+  evaluation:
+    batch_size: 16          # 较小的batch size用于特征计算
+    num_samples: 1000       # 评估样本数
+    save_adversarial: true  # 保存对抗样本
+    save_features: true     # 保存特征
+    
+  # 输出设置
+  output:
+    save_path: "experiments/results/fsta_attack"
+    log_interval: 5         # 日志间隔
+    save_interval: 50       # 保存间隔
+    feature_save_path: "experiments/results/fsta_attack/features"
+    
+# 数据集配置
+dataset:
+  name: "coco"
+  split: "val"
+  subset_size: 2000       # 较小的数据集用于特征空间攻击
+  
+# 模型配置
+model:
+  name: "clip"
+  variant: "ViT-B/32"
+  device: "cuda"
+  extract_features: true  # 启用特征提取
+  
+# 实验配置
+experiment:
+  seed: 42
+  num_workers: 2          # 较少的worker用于内存管理
+  pin_memory: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "fsta_attack.log"
+  feature_analysis: true  # 启用特征分析日志

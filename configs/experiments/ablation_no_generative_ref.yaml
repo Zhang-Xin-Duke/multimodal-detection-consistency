@@ -1,0 +1,90 @@
+# 消融实验配置：无生成参考（仅检索参考）
+# 作者: 张昕 (zhang.xin@duke.edu)
+# 机构: Duke University
+
+# 继承基础配置
+inherits:
+  - ../default.yaml
+  - ../datasets/coco.yaml
+  - ../attacks/pgd.yaml
+  - ../defenses/tvc.yaml  # 仅使用文本变体和检索
+
+# 实验特定配置
+experiment:
+  name: "ablation_no_generative_ref"
+  description: "消融实验：无生成参考，仅使用检索到的真实图像作为参考"
+  type: "ablation"
+  
+# 数据集配置覆盖
+dataset:
+  name: "coco"
+  num_samples: 500  # 消融实验使用较少样本
+  
+# 攻击配置覆盖
+attack:
+  method: "pgd"
+  params:
+    epsilon: 8
+    alpha: 2
+    num_iter: 10
+    batch_size: 32
+    
+# 防御配置覆盖 - 禁用生成参考
+defense:
+  text_variants:
+    enabled: true
+    num_variants: 8
+    methods: ["synonym", "paraphrase", "syntax"]
+    
+  retrieval_reference:
+    enabled: true
+    num_references: 5
+    similarity_threshold: 0.7
+    use_faiss: true
+    
+  generative_reference:
+    enabled: false  # 禁用生成参考
+    
+  consistency_detection:
+    enabled: true
+    similarity_threshold: 0.85
+    voting_strategy: "majority"
+    adaptive_threshold: true
+    
+# 实验流程
+stages:
+  - "data_loading"
+  - "attack_generation"
+  - "text_augmentation"
+  - "retrieval_reference"  # 仅检索参考
+  - "consistency_detection"
+  - "evaluation"
+  
+# 评估配置
+evaluation:
+  metrics:
+    - "attack_success_rate"
+    - "detection_accuracy"
+    - "false_positive_rate"
+    - "retrieval_accuracy"
+    - "processing_time"
+    - "gpu_memory"
+    
+# 输出配置
+output:
+  save_results: true
+  generate_plots: true
+  save_intermediate: false
+  
+# 性能配置
+performance:
+  batch_size: 16
+  num_workers: 4
+  device: "cuda"
+  mixed_precision: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "ablation_no_generative_ref.log"

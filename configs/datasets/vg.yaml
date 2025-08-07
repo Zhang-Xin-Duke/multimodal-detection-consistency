@@ -1,0 +1,13 @@
+# Visual Genome数据集配置别名
+# 此文件是visual_genome.yaml的别名，用于简化实验配置引用
+
+name: "vg_alias"
+description: "Visual Genome数据集配置别名"
+version: "1.0"
+
+# 继承主配置
+inherits:
+  - "./visual_genome.yaml"
+
+# 无额外覆盖配置
+overrides: {}

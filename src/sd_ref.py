@@ -22,6 +22,199 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class QualityMetrics:
+    """质量指标"""
+    aesthetic_score: float = 0.0
+    clip_score: float = 0.0
+    safety_score: float = 1.0
+    technical_score: float = 0.0
+    overall_score: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'aesthetic_score': self.aesthetic_score,
+            'clip_score': self.clip_score,
+            'safety_score': self.safety_score,
+            'technical_score': self.technical_score,
+            'overall_score': self.overall_score
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'QualityMetrics':
+        """从字典创建"""
+        return cls(**data)
+
+
+@dataclass
+class GenerationResult:
+    """生成结果"""
+    images: List[Image.Image]
+    prompts: List[str]
+    seeds: List[int]
+    quality_metrics: List[QualityMetrics]
+    generation_time: float = 0.0
+    cache_hit: bool = False
+    
+    def is_high_quality(self, threshold: float = 0.5) -> List[bool]:
+        """判断是否为高质量图像"""
+        return [m.overall_score >= threshold for m in self.quality_metrics]
+        
+    def filter_high_quality(self, threshold: float = 0.5) -> 'GenerationResult':
+        """过滤高质量图像"""
+        high_quality_mask = self.is_high_quality(threshold)
+        return GenerationResult(
+            images=[img for i, img in enumerate(self.images) if high_quality_mask[i]],
+            prompts=[p for i, p in enumerate(self.prompts) if high_quality_mask[i]],
+            seeds=[s for i, s in enumerate(self.seeds) if high_quality_mask[i]],
+            quality_metrics=[m for i, m in enumerate(self.quality_metrics) if high_quality_mask[i]],
+            generation_time=self.generation_time,
+            cache_hit=self.cache_hit
+        )
+        
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'num_images': len(self.images),
+            'prompts': self.prompts,
+            'seeds': self.seeds,
+            'quality_metrics': [m.to_dict() for m in self.quality_metrics],
+            'generation_time': self.generation_time,
+            'cache_hit': self.cache_hit
+        }
+
+
+class QualityFilter:
+    """质量过滤器"""
+    
+    def __init__(self, aesthetic_threshold: float = 0.5, clip_threshold: float = 0.5):
+        self.aesthetic_threshold = aesthetic_threshold
+        self.clip_threshold = clip_threshold
+        
+    def compute_aesthetic_score(self, image: Image.Image) -> float:
+        """计算美学分数"""
+        # 简化的美学评分，实际应该使用专门的美学评估模型
+        img_array = np.array(image)
+        # 基于图像的方差、对比度等简单指标
+        variance = np.var(img_array)
+        contrast = np.std(img_array)
+        score = min(1.0, (variance + contrast) / 10000)
+        return float(score)
+        
+    def compute_clip_score(self, image: Image.Image, prompt: str) -> float:
+        """计算CLIP分数"""
+        # 简化的CLIP分数计算，实际应该使用CLIP模型
+        # 这里返回一个基于prompt长度的简单分数
+        score = min(1.0, len(prompt.split()) / 20)
+        return float(score)
+        
+    def compute_safety_score(self, image: Image.Image) -> float:
+        """计算安全分数"""
+        # 简化的安全评分，实际应该使用安全检测模型
+        return 1.0  # 假设所有图像都是安全的
+        
+    def compute_technical_score(self, image: Image.Image) -> float:
+        """计算技术质量分数"""
+        img_array = np.array(image)
+        # 基于图像清晰度、噪声等技术指标
+        sharpness = np.var(img_array)
+        score = min(1.0, sharpness / 5000)
+        return float(score)
+        
+    def evaluate_quality(self, image: Image.Image, prompt: str = "") -> QualityMetrics:
+        """评估图像质量"""
+        aesthetic_score = self.compute_aesthetic_score(image)
+        clip_score = self.compute_clip_score(image, prompt) if prompt else 0.0
+        safety_score = self.compute_safety_score(image)
+        technical_score = self.compute_technical_score(image)
+        
+        # 计算总体分数
+        overall_score = (aesthetic_score + clip_score + safety_score + technical_score) / 4
+        
+        return QualityMetrics(
+            aesthetic_score=aesthetic_score,
+            clip_score=clip_score,
+            safety_score=safety_score,
+            technical_score=technical_score,
+            overall_score=overall_score
+        )
+        
+    def filter_images(self, images: List[Image.Image], prompts: List[str] = None) -> Tuple[List[Image.Image], List[QualityMetrics]]:
+        """过滤图像"""
+        if prompts is None:
+            prompts = [""] * len(images)
+            
+        filtered_images = []
+        quality_metrics = []
+        
+        for image, prompt in zip(images, prompts):
+            metrics = self.evaluate_quality(image, prompt)
+            if metrics.overall_score >= min(self.aesthetic_threshold, self.clip_threshold):
+                filtered_images.append(image)
+                quality_metrics.append(metrics)
+                
+        return filtered_images, quality_metrics
+        
+    def batch_evaluate_quality(self, images: List[Image.Image], prompts: List[str] = None) -> List[QualityMetrics]:
+        """批量评估质量"""
+        if prompts is None:
+            prompts = [""] * len(images)
+            
+        return [self.evaluate_quality(img, prompt) for img, prompt in zip(images, prompts)]
+
+
+class ImageCache:
+    """图像缓存"""
+    
+    def __init__(self, cache_dir: Optional[str] = None, max_size: int = 1000):
+        self.cache_dir = Path(cache_dir) if cache_dir else Path(".cache/sd_images")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.max_size = max_size
+        self.cache_info = {}
+        
+    def generate_cache_key(self, prompt: str, seed: int, **kwargs) -> str:
+        """生成缓存键"""
+        key_data = f"{prompt}_{seed}_{kwargs}"
+        return hashlib.md5(key_data.encode()).hexdigest()
+        
+    def save_image(self, image: Image.Image, cache_key: str) -> str:
+        """保存图像到缓存"""
+        cache_path = self.cache_dir / f"{cache_key}.png"
+        image.save(cache_path)
+        self.cache_info[cache_key] = {
+            'path': str(cache_path),
+            'timestamp': time.time(),
+            'size': cache_path.stat().st_size
+        }
+        return str(cache_path)
+        
+    def load_image(self, cache_key: str) -> Optional[Image.Image]:
+        """从缓存加载图像"""
+        if cache_key in self.cache_info:
+            cache_path = Path(self.cache_info[cache_key]['path'])
+            if cache_path.exists():
+                return Image.open(cache_path)
+        return None
+        
+    def clear_cache(self):
+        """清空缓存"""
+        for cache_key in list(self.cache_info.keys()):
+            cache_path = Path(self.cache_info[cache_key]['path'])
+            if cache_path.exists():
+                cache_path.unlink()
+        self.cache_info.clear()
+        
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """获取缓存统计信息"""
+        total_size = sum(info['size'] for info in self.cache_info.values())
+        return {
+            'cache_count': len(self.cache_info),
+            'total_size_mb': total_size / (1024 * 1024),
+            'cache_dir': str(self.cache_dir)
+        }
+
+
+@dataclass
 class SDReferenceConfig:
     """SD参考生成配置"""
     # SD模型配置
@@ -132,8 +325,9 @@ class SDReferenceGenerator:
         """
         try:
             augment_config = TextAugmentConfig(
-                num_variants=self.config.num_text_variants,
-                similarity_threshold=0.8
+                max_variants=self.config.num_text_variants,
+                min_similarity_threshold=0.8,
+                device=self.config.device
             )
             
             text_augmenter = TextAugmenter(augment_config)

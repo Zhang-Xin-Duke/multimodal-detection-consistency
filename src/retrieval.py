@@ -22,6 +22,177 @@ import time
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class IndexConfig:
+    """索引配置"""
+    index_type: str = "ivf"  # ivf, hnsw, flat
+    dimension: int = 512
+    n_clusters: int = 100  # for IVF
+    n_links: int = 32  # for HNSW
+    ef_construction: int = 200  # for HNSW
+    ef_search: int = 100  # for HNSW
+    use_gpu: bool = True
+    
+    def __post_init__(self):
+        if self.index_type not in ["ivf", "hnsw", "flat"]:
+            raise ValueError(f"Unsupported index type: {self.index_type}")
+
+
+@dataclass
+class RetrievalResult:
+    """检索结果"""
+    indices: List[int]
+    similarities: List[float]
+    items: List[Any] = None
+    query_time: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'indices': self.indices,
+            'similarities': self.similarities,
+            'query_time': self.query_time,
+            'count': len(self.indices)
+        }
+        
+    def filter_by_similarity(self, threshold: float) -> 'RetrievalResult':
+        """按相似度过滤"""
+        filtered_indices = []
+        filtered_similarities = []
+        filtered_items = []
+        
+        for i, sim in enumerate(self.similarities):
+            if sim >= threshold:
+                filtered_indices.append(self.indices[i])
+                filtered_similarities.append(sim)
+                if self.items:
+                    filtered_items.append(self.items[i])
+                    
+        return RetrievalResult(
+            indices=filtered_indices,
+            similarities=filtered_similarities,
+            items=filtered_items if self.items else None,
+            query_time=self.query_time
+        )
+        
+    def get_top_k(self, k: int) -> 'RetrievalResult':
+        """获取前k个结果"""
+        k = min(k, len(self.indices))
+        return RetrievalResult(
+            indices=self.indices[:k],
+            similarities=self.similarities[:k],
+            items=self.items[:k] if self.items else None,
+            query_time=self.query_time
+        )
+
+
+class FaissIndexManager:
+    """Faiss索引管理器"""
+    
+    def __init__(self, config: IndexConfig):
+        self.config = config
+        self.index = None
+        self.is_trained = False
+        
+    def create_index(self) -> faiss.Index:
+        """创建索引"""
+        if self.config.index_type == "flat":
+            index = faiss.IndexFlatIP(self.config.dimension)
+        elif self.config.index_type == "ivf":
+            quantizer = faiss.IndexFlatIP(self.config.dimension)
+            index = faiss.IndexIVFFlat(quantizer, self.config.dimension, self.config.n_clusters)
+        elif self.config.index_type == "hnsw":
+            index = faiss.IndexHNSWFlat(self.config.dimension, self.config.n_links)
+            index.hnsw.efConstruction = self.config.ef_construction
+            index.hnsw.efSearch = self.config.ef_search
+        else:
+            raise ValueError(f"Unsupported index type: {self.config.index_type}")
+            
+        if self.config.use_gpu and faiss.get_num_gpus() > 0:
+            index = faiss.index_cpu_to_gpu(faiss.StandardGpuResources(), 0, index)
+            
+        self.index = index
+        return index
+        
+    def build_index(self, features: np.ndarray):
+        """构建索引"""
+        if self.index is None:
+            self.create_index()
+            
+        features = features.astype(np.float32)
+        
+        if self.config.index_type == "ivf" and not self.is_trained:
+            self.index.train(features)
+            self.is_trained = True
+            
+        self.index.add(features)
+        
+    def search(self, query_features: np.ndarray, k: int) -> Tuple[np.ndarray, np.ndarray]:
+        """搜索"""
+        if self.index is None:
+            raise ValueError("Index not built")
+            
+        query_features = query_features.astype(np.float32)
+        similarities, indices = self.index.search(query_features, k)
+        return similarities, indices
+        
+    def save_index(self, path: str):
+        """保存索引"""
+        if self.index is None:
+            raise ValueError("Index not built")
+        faiss.write_index(self.index, path)
+        
+    def load_index(self, path: str):
+        """加载索引"""
+        self.index = faiss.read_index(path)
+        self.is_trained = True
+        
+    def add_to_index(self, features: np.ndarray):
+        """添加到索引"""
+        if self.index is None:
+            raise ValueError("Index not built")
+        features = features.astype(np.float32)
+        self.index.add(features)
+
+
+class ConsistencyCalculator:
+    """一致性计算器"""
+    
+    def __init__(self):
+        pass
+        
+    def compute_similarity_distribution(self, similarities: np.ndarray) -> Dict[str, float]:
+        """计算相似度分布"""
+        return {
+            'mean': float(np.mean(similarities)),
+            'std': float(np.std(similarities)),
+            'min': float(np.min(similarities)),
+            'max': float(np.max(similarities)),
+            'median': float(np.median(similarities))
+        }
+        
+    def compute_consistency_score(self, similarities1: np.ndarray, similarities2: np.ndarray) -> float:
+        """计算一致性分数"""
+        correlation = np.corrcoef(similarities1, similarities2)[0, 1]
+        return float(correlation) if not np.isnan(correlation) else 0.0
+        
+    def compute_top_k_consistency(self, indices1: np.ndarray, indices2: np.ndarray, k: int) -> float:
+        """计算top-k一致性"""
+        top_k1 = set(indices1[:k])
+        top_k2 = set(indices2[:k])
+        intersection = len(top_k1.intersection(top_k2))
+        return intersection / k
+        
+    def compute_rank_correlation(self, indices1: np.ndarray, indices2: np.ndarray) -> float:
+        """计算排名相关性"""
+        from scipy.stats import spearmanr
+        try:
+            correlation, _ = spearmanr(indices1, indices2)
+            return float(correlation) if not np.isnan(correlation) else 0.0
+        except:
+            return 0.0
+
+
 class RetrievalIndex:
     """检索索引管理器"""
     
@@ -217,14 +388,21 @@ class MultiModalRetriever:
             # 提取图像特征
             # 加载图像
             images = []
+            valid_paths = []
             for path in image_paths:
                 try:
                     image = Image.open(path).convert('RGB')
                     images.append(image)
+                    valid_paths.append(path)
                 except Exception as e:
                     logger.warning(f"无法加载图像 {path}: {e}")
                     continue
             
+            if not images:
+                raise ValueError(f"没有成功加载任何图像，总共尝试了 {len(image_paths)} 张图像")
+            
+            logger.info(f"成功加载 {len(images)} 张图像，跳过 {len(image_paths) - len(images)} 张")
+
             # 编码图像特征
             image_features = self.clip_model.encode_image(
                 images, 
@@ -234,7 +412,8 @@ class MultiModalRetriever:
             # 转换为numpy数组
             self.image_features = image_features.numpy()
             
-            self.image_paths = image_paths.copy()
+            # 只保存成功加载的图像路径
+            self.image_paths = valid_paths.copy()
             
             # 构建FAISS索引
             self.image_index = self._build_faiss_index(self.image_features)

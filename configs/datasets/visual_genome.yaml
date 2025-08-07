@@ -1,0 +1,169 @@
+# Visual Genome数据集配置
+# 108,077张图像，包含丰富的场景图注释、区域描述和问答对
+
+dataset:
+  name: "visual_genome"
+  type: "image_text_scene_graph"
+  
+  # 数据路径
+  paths:
+    root: "data/raw/visual_genome"
+    images: "data/raw/visual_genome/VG_100K"
+    images2: "data/raw/visual_genome/VG_100K_2"
+    annotations:
+      image_data: "data/raw/visual_genome/image_data.json"
+      region_descriptions: "data/raw/visual_genome/region_descriptions.json"
+      scene_graphs: "data/raw/visual_genome/scene_graphs.json"
+      objects: "data/raw/visual_genome/objects.json"
+      attributes: "data/raw/visual_genome/attributes.json"
+      relationships: "data/raw/visual_genome/relationships.json"
+      qa_pairs: "data/raw/visual_genome/question_answers.json"
+      
+  # 数据分割
+  splits:
+    train:
+      size: 86000
+      start_idx: 0
+      end_idx: 86000
+    val:
+      size: 11000
+      start_idx: 86000
+      end_idx: 97000
+    test:
+      size: 11077
+      start_idx: 97000
+      end_idx: 108077
+      
+  # 数据加载配置
+  loading:
+    batch_size: 32          # 较小的batch size由于复杂注释
+    num_workers: 6
+    pin_memory: true
+    shuffle: true
+    drop_last: false
+    
+  # 图像预处理
+  image_preprocessing:
+    resize: [224, 224]
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+    augmentation:
+      horizontal_flip: 0.3    # 较低的翻转概率保持空间关系
+      color_jitter:
+        brightness: 0.1
+        contrast: 0.1
+        saturation: 0.1
+        hue: 0.05
+      
+  # 文本预处理
+  text_preprocessing:
+    max_length: 77
+    tokenizer: "clip"
+    lowercase: true
+    remove_punctuation: false
+    use_region_descriptions: true
+    max_regions_per_image: 10
+    
+  # 场景图配置
+  scene_graph:
+    use_scene_graphs: true
+    max_objects: 20
+    max_relationships: 15
+    object_threshold: 0.5
+    relationship_threshold: 0.3
+    
+  # 采样配置
+  sampling:
+    strategy: "balanced"     # 平衡采样不同复杂度的图像
+    complexity_weights:
+      simple: 0.3           # 简单场景权重
+      medium: 0.5           # 中等复杂度权重
+      complex: 0.2          # 复杂场景权重
+    
+  # 数据过滤
+  filtering:
+    min_image_size: [100, 100]
+    max_image_size: [2048, 2048]
+    min_regions: 1
+    max_regions: 50
+    filter_corrupted: true
+    filter_no_annotations: true
+    
+  # 缓存配置
+  cache:
+    enabled: true
+    cache_dir: "data/cache/visual_genome"
+    features_cache: "data/cache/features/vg_features.h5"
+    scene_graph_cache: "data/cache/visual_genome/scene_graphs.pkl"
+    
+  # 注释类型选择
+  annotation_types:
+    region_descriptions: true
+    scene_graphs: true
+    objects: true
+    attributes: true
+    relationships: true
+    qa_pairs: false         # QA对可选
+    
+# 评估配置
+evaluation:
+  metrics:
+    - "retrieval_recall@1"
+    - "retrieval_recall@5"
+    - "retrieval_recall@10"
+    - "region_retrieval_recall@1"
+    - "region_retrieval_recall@5"
+    - "scene_graph_similarity"
+    - "object_detection_map"
+    
+  # 检索配置
+  retrieval:
+    top_k: [1, 5, 10, 20]
+    similarity_metric: "cosine"
+    normalize_features: true
+    use_region_features: true
+    
+  # 场景图评估
+  scene_graph_eval:
+    enabled: true
+    metrics: ["recall@50", "recall@100"]
+    
+# 特殊任务配置
+tasks:
+  # 区域描述任务
+  region_description:
+    enabled: true
+    max_regions: 10
+    min_region_size: 32
+    
+  # 视觉问答任务
+  visual_qa:
+    enabled: false
+    max_questions: 5
+    
+  # 场景图生成任务
+  scene_graph_generation:
+    enabled: true
+    object_classes: 150
+    relationship_classes: 50
+    
+# 实验配置
+experiment:
+  seed: 42
+  deterministic: true
+  benchmark: true
+  
+# 内存管理
+memory:
+  max_memory_usage: "70%"   # 保守的内存使用
+  preload_annotations: false # 不预加载所有注释
+  lazy_loading: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  log_interval: 200
+  save_samples: true
+  sample_save_path: "experiments/logs/vg_samples"
+  scene_graph_visualization: true

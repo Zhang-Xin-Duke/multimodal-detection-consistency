@@ -1,4 +1,5 @@
-"""数据验证模块
+"""
+数据验证模块
 
 实现数据集验证和数据泄漏检测功能。
 """
@@ -17,7 +18,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import DBSCAN
 import torch
 from ..models import CLIPModel, CLIPConfig
-from ..utils.metrics import SimilarityMetrics
+from ..utils.metrics import SimilarityMetrics, SimilarityCalculator
 import warnings
 
 logger = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ class DataValidator:
             )
         
         # 相似性计算器
-        self.similarity_metrics = SimilarityMetrics()
+        self.similarity_calculator = SimilarityCalculator()
         
         # 缓存
         self.feature_cache = {}

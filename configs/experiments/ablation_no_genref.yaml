@@ -1,0 +1,228 @@
+# 消融实验配置：关闭生成参考一致性
+# 测试不使用生成参考时的防御性能
+
+experiment:
+  name: "ablation_no_genref"
+  description: "消融实验：关闭生成参考一致性，仅使用基础一致性和文本变体一致性"
+  version: "1.0"
+  type: "ablation_study"
+  
+  # 实验设置
+  settings:
+    seed: 42
+    deterministic: true
+    num_runs: 5             # 更多运行次数确保统计显著性
+    save_results: true
+    
+# 数据集配置（多个数据集对比）
+datasets:
+  - name: "coco"
+    config: "configs/datasets/coco.yaml"
+    subset_size: 3000
+    
+  - name: "flickr30k"
+    config: "configs/datasets/flickr30k.yaml"
+    subset_size: 2000
+    
+# 攻击配置（多种攻击方法）
+attacks:
+  - name: "pgd"
+    config: "configs/attacks/pgd.yaml"
+    
+  - name: "hubness"
+    config: "configs/attacks/hubness.yaml"
+    
+  - name: "fsta"
+    config: "configs/attacks/fsta.yaml"
+    
+# 防御配置（消融设置）
+defense:
+  # 基础一致性检测
+  base_consistency:
+    enabled: true
+    threshold: 0.8
+    weight: 0.5
+    
+  # 文本变体一致性 (TVC)
+  text_variant_consistency:
+    enabled: true
+    num_variants: 10
+    similarity_threshold: 0.85
+    aggregation_method: "mean"
+    weight: 0.5
+    
+  # 生成参考一致性 (GenRef) - 关闭
+  generative_references:
+    enabled: false          # 消融：关闭生成参考
+    weight: 0.0
+    
+  # 集成检测（仅两个组件）
+  ensemble:
+    enabled: true
+    weights:
+      base: 0.5
+      tvc: 0.5
+      genref: 0.0           # 权重为0
+    aggregation: "weighted_average"
+    normalize_weights: true
+    
+# 对比实验配置
+comparison:
+  # 基线方法
+  baselines:
+    - name: "base_only"
+      description: "仅基础一致性"
+      components: ["base_consistency"]
+      
+    - name: "tvc_only"
+      description: "仅文本变体一致性"
+      components: ["text_variant_consistency"]
+      
+    - name: "base_tvc"
+      description: "基础+文本变体一致性"
+      components: ["base_consistency", "text_variant_consistency"]
+      
+  # 完整方法（用于对比）
+  full_method:
+    name: "full_defense"
+    description: "完整防御方法（包含生成参考）"
+    config: "configs/experiments/coco_pgd_full.yaml"
+    
+# 模型配置
+model:
+  # CLIP模型
+  clip:
+    name: "ViT-B/32"
+    device: "cuda"
+    batch_size: 64
+    
+  # Qwen模型（用于文本变体生成）
+  qwen:
+    model_name: "Qwen/Qwen-7B-Chat"
+    device: "cuda"
+    max_length: 512
+    temperature: 0.7
+    
+# 评估配置
+evaluation:
+  metrics:
+    # 主要指标
+    primary:
+      - "detection_auc"
+      - "detection_f1"
+      - "robust_accuracy"
+      
+    # 详细指标
+    detailed:
+      - "detection_accuracy"
+      - "detection_precision"
+      - "detection_recall"
+      - "attack_success_rate"
+      - "false_positive_rate"
+      - "true_negative_rate"
+      
+    # 检索性能
+    retrieval:
+      - "retrieval_recall@1"
+      - "retrieval_recall@5"
+      - "retrieval_recall@10"
+      
+    # 效率指标
+    efficiency:
+      - "inference_time"
+      - "memory_usage"
+      - "computational_cost"
+      
+  # 统计分析
+  statistical_analysis:
+    enabled: true
+    significance_test: "t_test"
+    confidence_level: 0.95
+    multiple_comparison_correction: "bonferroni"
+    
+# 消融分析配置
+ablation_analysis:
+  # 组件重要性分析
+  component_importance:
+    enabled: true
+    method: "permutation"
+    
+  # 参数敏感性分析
+  parameter_sensitivity:
+    enabled: true
+    parameters:
+      - "similarity_threshold"
+      - "num_variants"
+      - "ensemble_weights"
+      
+  # 性能下降分析
+  performance_degradation:
+    enabled: true
+    baseline: "full_method"
+    metrics: ["detection_auc", "robust_accuracy"]
+    
+# 实验流程
+pipeline:
+  stages:
+    1. "preparation":
+        - setup_environment
+        - load_datasets
+        - initialize_models
+        
+    2. "baseline_evaluation":
+        - evaluate_individual_components
+        - establish_component_baselines
+        
+    3. "ablation_testing":
+        - test_without_genref
+        - compare_with_full_method
+        
+    4. "cross_dataset_validation":
+        - test_on_multiple_datasets
+        - analyze_generalization
+        
+    5. "statistical_analysis":
+        - compute_significance_tests
+        - generate_confidence_intervals
+        
+    6. "visualization":
+        - create_comparison_plots
+        - generate_ablation_tables
+        
+# 输出配置
+output:
+  base_path: "experiments/results/ablation_no_genref"
+  
+  # 保存内容
+  save:
+    component_results: true
+    comparison_tables: true
+    statistical_tests: true
+    ablation_plots: true
+    
+  # 报告生成
+  reports:
+    - "ablation_summary.md"
+    - "statistical_analysis.pdf"
+    - "performance_comparison.html"
+    
+  # 可视化
+  visualizations:
+    - "component_comparison_bars"
+    - "performance_degradation_plot"
+    - "statistical_significance_heatmap"
+    - "efficiency_comparison_radar"
+    
+# 资源配置
+resources:
+  gpu_memory: "12GB"
+  cpu_cores: 6
+  max_runtime: "4h"
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "ablation_no_genref.log"
+  detailed_timing: true
+  component_profiling: true

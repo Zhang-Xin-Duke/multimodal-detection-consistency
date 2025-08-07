@@ -40,10 +40,14 @@ class ModelConfig:
 @dataclass
 class DataConfig:
     """数据配置"""
-    # 数据集路径
-    coco_root: str = "./data/coco"
-    flickr30k_root: str = "./data/flickr30k"
+    # 原有数据集路径
+    coco_root: str = "./data/raw/coco"
+    flickr30k_root: str = "./data/raw/flickr30k"
     processed_root: str = "./data/processed"
+    
+    # 新增数据集路径
+    cc3m_root: str = "./data/raw/cc3m"
+    visual_genome_root: str = "./data/raw/visual_genome"
     
     # 数据加载配置
     batch_size: int = 32
@@ -55,6 +59,11 @@ class DataConfig:
     image_size: int = 224
     normalize_mean: list = field(default_factory=lambda: [0.485, 0.456, 0.406])
     normalize_std: list = field(default_factory=lambda: [0.229, 0.224, 0.225])
+    
+    # 数据集特定配置
+    validate_images: bool = True
+    skip_corrupted: bool = True
+    max_retries: int = 3
 
 
 @dataclass
@@ -80,10 +89,15 @@ class ExperimentConfig:
 @dataclass
 class AttackConfig:
     """攻击配置"""
-    # Hubness攻击
+    # Hubness攻击 - 基于原始论文的参数
     hubness_k: int = 10
     hubness_alpha: float = 0.1
-    hubness_max_iterations: int = 100
+    hubness_max_iterations: int = 1000  # 与原始论文一致
+    hubness_epsilon: float = 16.0 / 255.0  # 与原始论文一致
+    hubness_lr: float = 0.02  # 与原始论文一致
+    hubness_gamma_epochs: int = 300  # 学习率衰减周期
+    hubness_modality: str = 'vision'  # 模态类型
+    hubness_batch_size: int = 1  # 批次大小
     
     # PGD攻击
     pgd_epsilon: float = 8.0 / 255.0
@@ -317,7 +331,7 @@ class ConfigManager:
             
             # 验证路径
             data_config = self.config['data']
-            for path_attr in ['coco_root', 'flickr30k_root', 'processed_root']:
+            for path_attr in ['coco_root', 'flickr30k_root', 'cc3m_root', 'visual_genome_root', 'processed_root']:
                 path = getattr(data_config, path_attr)
                 Path(path).mkdir(parents=True, exist_ok=True)
             
@@ -429,18 +443,29 @@ def get_qwen_cache_dir() -> str:
     获取Qwen模型的缓存目录
     
     Returns:
-        Qwen模型缓存目录路径
+        Qwen模型缓存目录路径（绝对路径）
     """
     try:
         # 尝试从配置中获取
-        if hasattr(config_manager.config.get('models', {}), 'get'):
-            qwen_config = config_manager.config['models'].get('qwen', {})
-            if isinstance(qwen_config, dict) and 'cache_dir' in qwen_config:
-                return qwen_config['cache_dir']
+        cache_dir = "./cache/qwen"  # 默认值
         
-        # 如果配置中没有，返回默认值
-        return "./cache/qwen"
+        # 检查config_manager是否已加载配置
+        if config_manager.config and 'models' in config_manager.config:
+            models_config = config_manager.config['models']
+            if isinstance(models_config, dict) and 'qwen' in models_config:
+                qwen_config = models_config['qwen']
+                if isinstance(qwen_config, dict) and 'cache_dir' in qwen_config:
+                    cache_dir = qwen_config['cache_dir']
+        
+        # 转换为绝对路径
+        cache_path = Path(cache_dir)
+        if not cache_path.is_absolute():
+            cache_path = Path.cwd() / cache_path
+        
+        return str(cache_path.resolve())
         
     except Exception as e:
         logger.warning(f"获取Qwen缓存目录失败，使用默认值: {e}")
-        return "./cache/qwen"
+        # 返回默认的绝对路径
+        default_path = Path.cwd() / "cache" / "qwen"
+        return str(default_path.resolve())

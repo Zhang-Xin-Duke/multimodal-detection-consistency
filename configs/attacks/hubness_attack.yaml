@@ -1,0 +1,271 @@
+# Hubness Attack 配置文件
+# 基于《Adversarial Hubness in Multi-Modal Retrieval》论文复现
+# 作者: 张昕 (ZHANG XIN) - Duke University
+
+# 基础配置
+base_config:
+  # 攻击参数
+  epsilon: 0.0314  # 8/255, L∞扰动边界
+  num_iterations: 100  # PGD迭代次数
+  step_size: 0.01  # 每步扰动大小
+  
+  # Hubness相关参数
+  k_neighbors: 10  # K近邻数量
+  dataset_size: 1000  # 参考数据集大小
+  query_pool_size: 100  # 查询池大小
+  num_target_queries: 10  # 目标查询数量
+  
+  # 攻击策略
+  attack_mode: "untargeted"  # 攻击模式: untargeted, targeted
+  loss_function: "hubness_maximization"  # 损失函数类型
+  
+  # 优化参数
+  momentum: 0.9  # 动量参数
+  decay_factor: 0.95  # 学习率衰减
+  
+  # 系统配置
+  device: "cuda"  # 设备选择: auto, cpu, cuda
+  random_seed: 42  # 随机种子
+  num_workers: 4  # 数据加载线程数
+  
+  # 缓存配置
+  enable_cache: true  # 启用结果缓存
+  cache_dir: "cache/hubness_attack"  # 缓存目录
+  
+  # 日志配置
+  log_level: "INFO"  # 日志级别
+  save_intermediate: false  # 保存中间结果
+
+# 预设配置
+presets:
+  # 弱攻击配置 - 快速测试用
+  weak_attack:
+    epsilon: 0.0157  # 4/255
+    num_iterations: 20
+    step_size: 0.005
+    k_neighbors: 5
+    dataset_size: 500
+    query_pool_size: 50
+    num_target_queries: 5
+    attack_mode: "untargeted"
+    
+  # 强攻击配置 - 最大攻击效果
+  strong_attack:
+    epsilon: 0.0627  # 16/255
+    num_iterations: 200
+    step_size: 0.02
+    k_neighbors: 20
+    dataset_size: 2000
+    query_pool_size: 200
+    num_target_queries: 20
+    attack_mode: "untargeted"
+    momentum: 0.95
+    
+  # 针对性攻击配置
+  targeted_attack:
+    epsilon: 0.0314  # 8/255
+    num_iterations: 150
+    step_size: 0.008
+    k_neighbors: 15
+    dataset_size: 1500
+    query_pool_size: 150
+    num_target_queries: 15
+    attack_mode: "targeted"
+    loss_function: "targeted_hubness"
+    
+  # 论文标准配置 - 复现论文实验
+  paper_config:
+    epsilon: 0.0314  # 8/255
+    num_iterations: 100
+    step_size: 0.01
+    k_neighbors: 10
+    dataset_size: 1000
+    query_pool_size: 100
+    num_target_queries: 10
+    attack_mode: "untargeted"
+    momentum: 0.9
+    decay_factor: 0.95
+    random_seed: 42
+    
+  # 快速演示配置
+  demo_config:
+    epsilon: 0.0314  # 8/255
+    num_iterations: 50
+    step_size: 0.02
+    k_neighbors: 5
+    dataset_size: 100
+    query_pool_size: 20
+    num_target_queries: 5
+    device: "cpu"
+    
+  # 基准测试配置
+  benchmark_config:
+    epsilon: 0.0314  # 8/255
+    num_iterations: 30
+    step_size: 0.015
+    k_neighbors: 8
+    dataset_size: 500
+    query_pool_size: 50
+    num_target_queries: 8
+    device: "cpu"
+    enable_cache: false
+
+# 数据集特定配置
+dataset_configs:
+  # MS COCO配置
+  coco:
+    dataset_size: 5000  # COCO验证集大小
+    query_pool_size: 500
+    num_target_queries: 50
+    image_size: [224, 224]
+    
+  # Flickr30K配置
+  flickr30k:
+    dataset_size: 1000  # Flickr30K测试集大小
+    query_pool_size: 100
+    num_target_queries: 20
+    image_size: [224, 224]
+    
+  # Conceptual Captions配置
+  cc3m:
+    dataset_size: 10000  # CC3M采样大小
+    query_pool_size: 1000
+    num_target_queries: 100
+    image_size: [224, 224]
+    
+  # Visual Genome配置
+  visual_genome:
+    dataset_size: 5000  # VG采样大小
+    query_pool_size: 500
+    num_target_queries: 50
+    image_size: [224, 224]
+
+# 模型特定配置
+model_configs:
+  # CLIP模型配置
+  clip:
+    model_name: "ViT-B/32"
+    feature_dim: 512
+    normalize_features: true
+    
+  # ALIGN模型配置
+  align:
+    model_name: "kakaobrain/align-base"
+    feature_dim: 640
+    normalize_features: true
+    
+  # BLIP模型配置
+  blip:
+    model_name: "Salesforce/blip-image-captioning-base"
+    feature_dim: 768
+    normalize_features: true
+
+# 评估配置
+evaluation:
+  # 评估指标
+  metrics:
+    - "attack_success_rate"  # 攻击成功率
+    - "hubness_score"  # Hubness分数
+    - "perturbation_magnitude"  # 扰动幅度
+    - "retrieval_accuracy"  # 检索准确率
+    - "attack_time"  # 攻击时间
+    
+  # 成功标准
+  success_criteria:
+    hubness_threshold: 0.1  # Hubness分数阈值
+    perturbation_threshold: 0.0314  # 扰动阈值
+    
+  # 统计配置
+  num_runs: 5  # 重复运行次数
+  confidence_level: 0.95  # 置信水平
+  
+# 实验配置
+experiment:
+  # 消融实验
+  ablation:
+    # 测试不同epsilon值
+    epsilon_values: [0.0078, 0.0157, 0.0314, 0.0627]  # 2/255, 4/255, 8/255, 16/255
+    
+    # 测试不同迭代次数
+    iteration_values: [10, 20, 50, 100, 200]
+    
+    # 测试不同K值
+    k_values: [5, 10, 15, 20, 25]
+    
+    # 测试不同数据集大小
+    dataset_sizes: [100, 500, 1000, 2000, 5000]
+    
+  # 对比实验
+  comparison:
+    # 对比其他攻击方法
+    baseline_attacks:
+      - "pgd"  # PGD攻击
+      - "fgsm"  # FGSM攻击
+      - "c&w"  # C&W攻击
+      
+    # 对比不同损失函数
+    loss_functions:
+      - "hubness_maximization"
+      - "retrieval_loss"
+      - "feature_distance"
+      
+  # 鲁棒性测试
+  robustness:
+    # 测试不同噪声水平
+    noise_levels: [0.01, 0.02, 0.05, 0.1]
+    
+    # 测试不同图像变换
+    transformations:
+      - "rotation"
+      - "scaling"
+      - "translation"
+      - "brightness"
+      - "contrast"
+
+# 输出配置
+output:
+  # 结果保存
+  save_results: true
+  results_dir: "results/hubness_attack"
+  
+  # 可视化
+  generate_plots: true
+  plot_formats: ["png", "pdf"]
+  
+  # 报告生成
+  generate_report: true
+  report_format: "markdown"
+  
+  # 日志配置
+  log_file: "logs/hubness_attack.log"
+  log_format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# 资源限制
+resource_limits:
+  # 内存限制
+  max_memory_gb: 32  # 最大内存使用
+  
+  # 时间限制
+  max_attack_time: 300  # 单次攻击最大时间(秒)
+  max_total_time: 3600  # 总实验最大时间(秒)
+  
+  # GPU限制
+  max_gpu_memory_gb: 24  # 最大GPU内存使用
+  
+# 调试配置
+debug:
+  # 调试模式
+  enable_debug: false
+  debug_level: "INFO"
+  
+  # 性能分析
+  enable_profiling: false
+  profile_output: "profiles/hubness_attack.prof"
+  
+  # 可视化调试
+  visualize_perturbations: false
+  save_intermediate_images: false
+  
+  # 验证配置
+  validate_inputs: true
+  check_gradients: false

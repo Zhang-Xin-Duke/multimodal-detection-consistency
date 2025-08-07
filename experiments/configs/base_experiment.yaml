@@ -1,0 +1,168 @@
+# 基础实验配置模板
+# 作者: 张昕 (zhang.xin@duke.edu)
+# 机构: Duke University
+
+experiment_name: "base_multimodal_defense_experiment"
+description: "多模态对抗检测基础实验配置"
+version: "1.0"
+
+# 数据集配置
+dataset:
+  name: "coco"  # 支持: coco, flickr30k, cc3m, visual_genome
+  split: "test"
+  max_samples: 1000
+  batch_size: 32
+  shuffle: false
+  num_workers: 4
+  image_size: [224, 224]
+  normalize: true
+  cache_features: false
+  cache_dir: null
+
+# 攻击配置
+attack:
+  method: "pgd"  # 支持: pgd, hubness, fsta, sma
+  enabled: true
+  parameters:
+    epsilon: 0.031372549  # 8/255
+    alpha: 0.007843137    # 2/255
+    num_iter: 10
+    random_start: true
+    targeted: false
+
+# 防御配置
+defense:
+  # 文本变体生成
+  text_variants:
+    enabled: true
+    count: 5
+    strategies: ["synonym", "paraphrase", "reorder"]
+    quality_threshold: 0.8
+    similarity_threshold: 0.85
+    max_retries: 3
+    temperature: 0.7
+    diversity_penalty: 0.1
+  
+  # 检索参考
+  retrieval_reference:
+    enabled: true
+    count: 5
+    similarity_threshold: 0.3
+    database_path: "data/reference_db"
+    top_k: 20
+    batch_size: 256
+    similarity_metric: "cosine"
+    normalize_features: true
+    index_type: "faiss"
+  
+  # 生成参考
+  generative_reference:
+    enabled: true
+    count: 3
+    guidance_scale: 7.5
+    num_inference_steps: 20
+    height: 512
+    width: 512
+    seed: null
+    
+    # 优化配置
+    optimization:
+      enable_offline_cache: true
+      cache_dir: "./cache/sd_references"
+      cache_size_limit: "50GB"
+      precompute_common_queries: true
+      fast_path_enabled: true
+      fallback_timeout_ms: 100
+      async_generation: true
+      fp16_inference: true
+      torch_compile: true
+      gpu_memory_fraction: 0.8
+      min_text_image_similarity: 0.2
+      max_generation_retries: 3
+  
+  # 一致性检测
+  consistency_detection:
+    enabled: true
+    voting_strategy: "weighted"  # 支持: simple, weighted, adaptive
+    weights:
+      text_variants: 0.3
+      retrieval_reference: 0.4
+      generative_reference: 0.3
+    threshold: 0.5
+    adaptive_threshold: true
+    confidence_threshold: 0.8
+    min_consensus_ratio: 0.6
+
+# 模型配置
+models:
+  # CLIP模型
+  clip:
+    model_name: "ViT-B/32"
+    device: "cuda"
+    batch_size: 64
+    cache_dir: null
+  
+  # Qwen模型
+  qwen:
+    model_name: "Qwen/Qwen2-VL-7B-Instruct"
+    api_key: "sk-fda43c38cc2f4012ac44da3848e79586"
+    device: "cuda"
+    max_length: 512
+    temperature: 0.7
+    top_p: 0.9
+    cache_dir: null
+  
+  # Stable Diffusion模型
+  stable_diffusion:
+    model_name: "runwayml/stable-diffusion-v1-5"
+    device: "cuda"
+    torch_dtype: "float16"
+    cache_dir: null
+    safety_checker: false
+
+# 评估配置
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1_score", "roc_auc", "pr_auc"]
+  save_predictions: true
+  save_scores: true
+  compute_confidence_intervals: true
+  confidence_level: 0.95
+  bootstrap_samples: 1000
+
+# 输出配置
+output:
+  base_dir: "experiments/results"
+  experiment_dir: null  # 自动生成
+  save_models: false
+  save_visualizations: true
+  save_logs: true
+  export_latex_tables: true
+  log_level: "INFO"
+
+# 硬件配置
+hardware:
+  device: "cuda"  # 支持: cuda, cpu, auto
+  gpu_ids: [0]  # 使用的GPU ID列表
+  mixed_precision: true
+  pin_memory: true
+  num_workers: 4
+  prefetch_factor: 2
+
+# 调试配置
+debug:
+  enabled: false
+  log_level: "DEBUG"
+  save_intermediate_results: false
+  profile_performance: false
+  memory_profiling: false
+  deterministic: true
+  seed: 42
+
+# 实验元数据
+metadata:
+  author: "张昕 (ZHANG XIN)"
+  email: "zhang.xin@duke.edu"
+  institution: "Duke University"
+  created_date: null  # 自动填充
+  tags: ["multimodal", "adversarial", "defense", "consistency"]
+  notes: ""

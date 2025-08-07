@@ -1,0 +1,236 @@
+# 演示实验配置文件
+# 作者: 张昕 (zhang.xin@duke.edu)
+# 机构: Duke University
+
+# 实验基本信息
+experiment_name: "multimodal_defense_demo"
+description: "多模态对抗检测防御系统演示实验"
+author: "ZHANG XIN (zhang.xin@duke.edu)"
+institution: "Duke University"
+version: "1.0.0"
+
+# 数据集配置
+dataset:
+  name: "coco"  # 支持: coco, flickr30k, cc3m, visual_genome
+  data_dir: "./data"
+  split: "val"
+  max_samples: 500  # 演示用较小数据集
+  batch_size: 16
+  shuffle: true
+  num_workers: 4
+  pin_memory: true
+
+# 攻击配置
+attack:
+  method: "hubness"  # 支持: pgd, hubness, fsta, sma
+  
+  # PGD攻击参数
+  pgd:
+    epsilon: 0.0627  # 16/255
+    alpha: 0.00784   # 2/255
+    num_steps: 40
+    random_start: true
+    targeted: false
+  
+  # Hubness攻击参数
+  hubness:
+    epsilon: 0.0627
+    learning_rate: 0.02
+    num_iterations: 50  # 演示用较少迭代
+    gamma: 0.9
+    gamma_epochs: 10
+    hubness_threshold: 0.6
+    target_hubness: 0.7
+    k_neighbors: 5
+    batch_size: 8
+    enable_multi_gpu: false  # 演示用单GPU
+    enable_mixed_precision: true
+  
+  # FSTA攻击参数
+  fsta:
+    epsilon: 0.0627
+    num_steps: 40
+    step_size: 0.00784
+    momentum: 0.9
+  
+  # SMA攻击参数
+  sma:
+    epsilon: 0.0627
+    num_steps: 40
+    step_size: 0.00784
+    diversity_weight: 0.5
+
+# 防御配置
+defense:
+  # 文本变体生成
+  text_variants:
+    enabled: true
+    num_variants: 3
+    strategies: ["synonym", "paraphrase", "reorder"]
+    quality_threshold: 0.8
+    max_length_ratio: 1.5
+    preserve_entities: true
+    
+  # 检索参考生成
+  retrieval_reference:
+    enabled: true
+    reference_db_path: "./data/reference_db"
+    num_references: 5
+    similarity_threshold: 0.7
+    use_faiss: true
+    faiss_index_type: "IVF"
+    nlist: 100
+    
+  # 生成参考生成
+  generative_reference:
+    enabled: true
+    model_name: "runwayml/stable-diffusion-v1-5"
+    num_references: 3
+    image_size: [512, 512]
+    guidance_scale: 7.5
+    num_inference_steps: 20  # 演示用较少步数
+    
+  # 一致性检查
+  consistency_checker:
+    similarity_threshold: 0.8
+    voting_strategy: "weighted"  # simple, weighted, adaptive
+    adaptive_threshold: true
+    confidence_weight: 0.3
+    history_weight: 0.2
+
+# 模型配置
+models:
+  # CLIP模型
+  clip:
+    model_name: "ViT-B/32"
+    device: "auto"
+    cache_dir: "./models/clip"
+    
+  # Qwen模型（用于文本变体生成）
+  qwen:
+    model_name: "Qwen/Qwen2-7B-Instruct"
+    device: "auto"
+    max_length: 512
+    temperature: 0.7
+    top_p: 0.9
+    cache_dir: "./models/qwen"
+    
+  # Stable Diffusion模型
+  stable_diffusion:
+    model_name: "runwayml/stable-diffusion-v1-5"
+    device: "auto"
+    cache_dir: "./models/stable_diffusion"
+    enable_attention_slicing: true
+    enable_cpu_offload: false
+
+# 评估配置
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1_score", "roc_auc", "pr_auc"]
+  cross_validation:
+    enabled: false
+    folds: 5
+    stratified: true
+  
+  # 阈值优化
+  threshold_optimization:
+    enabled: true
+    method: "roc"  # roc, pr, f1
+    validation_split: 0.2
+  
+  # 置信区间
+  confidence_intervals:
+    enabled: true
+    confidence_level: 0.95
+    bootstrap_samples: 1000
+
+# 消融实验配置
+ablation:
+  enabled: true
+  num_runs: 3  # 每个配置的运行次数
+  components: ["text_variants", "retrieval_reference", "generative_reference"]
+  statistical_test: "paired_t_test"
+  significance_level: 0.05
+  
+  # 自定义消融配置
+  custom_configs:
+    minimal_system:
+      text_variants: true
+      retrieval_reference: false
+      generative_reference: false
+    
+    reference_only:
+      text_variants: false
+      retrieval_reference: true
+      generative_reference: true
+
+# 输出配置
+output:
+  base_dir: "./experiments/results"
+  experiment_dir: null  # 如果为null，将自动生成
+  save_models: false
+  save_predictions: true
+  save_visualizations: true
+  save_intermediate_results: false
+  
+  # 可视化配置
+  visualization:
+    dpi: 300
+    format: "png"
+    style: "seaborn-v0_8"
+    figsize: [10, 8]
+    
+  # 日志配置
+  logging:
+    level: "INFO"
+    save_to_file: true
+    log_file: "experiment.log"
+
+# 硬件配置
+hardware:
+  device: "auto"  # auto, cuda, cpu
+  gpu_ids: [0]  # 演示用单GPU
+  mixed_precision: true
+  compile_model: false  # 演示时关闭以避免兼容性问题
+  
+  # 内存优化
+  memory_optimization:
+    gradient_checkpointing: false
+    cpu_offload: false
+    pin_memory: true
+    
+  # 并行配置
+  parallel:
+    data_parallel: false
+    distributed: false
+    num_workers: 4
+
+# 调试配置
+debug:
+  enabled: false
+  log_level: "INFO"
+  save_intermediate_results: false
+  profile_performance: false
+  seed: 42
+  deterministic: true
+  
+  # 快速测试模式
+  fast_test:
+    enabled: true  # 演示模式
+    max_samples: 100
+    max_iterations: 10
+    skip_heavy_operations: true
+
+# 实验元数据
+metadata:
+  tags: ["demo", "multimodal", "defense", "consistency"]
+  notes: "演示实验配置，用于快速测试系统功能"
+  expected_runtime: "30分钟"
+  hardware_requirements: "GPU内存 >= 8GB"
+  
+  # 依赖版本
+  dependencies:
+    torch: ">=2.0.0"
+    transformers: ">=4.30.0"
+    diffusers: ">=0.20.0"
+    clip: ">=1.0"
+    faiss: ">=1.7.0"

@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Multi-Modal Adversarial Detection via Consistency Analysis"
+version: 1.0.0
+date-released: 2024-01-01
+url: "https://github.com/zhangxin/multimodal-adversarial-detection"
+preferred-citation:
+  type: article
+  authors:
+  - family-names: "Zhang"
+    given-names: "Xin"
+    orcid: "https://orcid.org/0000-0000-0000-0000"
+    affiliation: "Duke University"
+    email: "zhang.xin@duke.edu"
+  title: "Multi-Modal Adversarial Detection via Consistency Analysis"
+  journal: "Conference Proceedings"
+  year: 2024
+  abstract: "A comprehensive framework for detecting adversarial examples in multi-modal retrieval systems through consistency analysis across text variants and generative references."
+  keywords:
+    - "adversarial detection"
+    - "multi-modal retrieval"
+    - "consistency analysis"
+    - "CLIP"
+    - "stable diffusion"
+license: MIT
+repository-code: "https://github.com/zhangxin/multimodal-adversarial-detection"
+contact:
+  - family-names: "Zhang"
+    given-names: "Xin"
+    email: "zhang.xin@duke.edu"

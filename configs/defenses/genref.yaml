@@ -1,0 +1,277 @@
+# 生成参考一致性防御配置 (Generative References)
+name: "genref_defense"
+type: "consistency_based"
+description: "Defense using generative reference consistency analysis"
+
+# 防御策略
+strategy:
+  type: "generative_reference_consistency"
+  components:
+    - "image_text_similarity"
+    - "text_variant_consistency"
+    - "generative_reference_consistency"
+  
+# 一致性检测配置
+consistency:
+  # 直接一致性
+  direct:
+    enabled: true
+    similarity_metric: "cosine"
+    threshold: 0.5
+    normalize_features: true
+    weight: 0.3
+    
+  # 文本变体一致性
+  text_variant:
+    enabled: true
+    similarity_metric: "cosine"
+    threshold: 0.85
+    normalize_features: true
+    weight: 0.3
+    
+    # 变体生成配置
+    generation:
+      num_variants: 8  # 减少变体数量以平衡计算开销
+      max_retries: 3
+      diversity_penalty: 0.1
+      quality_threshold: 0.8
+      
+  # 生成参考一致性
+  generative_reference:
+    enabled: true
+    similarity_metric: "cosine"
+    threshold: 0.7
+    normalize_features: true
+    weight: 0.4
+    
+    # 参考生成配置
+    generation:
+      num_images_per_text: 3
+      num_inference_steps: 20
+      guidance_scale: 7.5
+      quality_threshold: 0.75
+      
+    # 聚合策略
+    aggregation: "max"  # max, mean, weighted_mean
+
+# 文本增强配置
+text_augment:
+  # 同义词替换
+  synonym_replacement:
+    enabled: true
+    ratio: 0.1
+    preserve_pos: true
+    
+  # 释义生成
+  paraphrase:
+    enabled: true
+    model: "qwen"
+    temperature: 0.7
+    max_length: 512
+    num_beams: 3
+    
+  # 句法变换
+  syntax_transform:
+    enabled: true
+    ratio: 0.15
+    preserve_meaning: true
+    
+  # 回译
+  back_translation:
+    enabled: false
+    
+  # 质量控制
+  quality_control:
+    similarity_threshold: 0.85
+    semantic_threshold: 0.9
+    fluency_threshold: 0.8
+
+# SD参考生成配置
+sd_reference:
+  # 生成参数
+  generation:
+    num_images_per_text: 3
+    batch_size: 12
+    num_inference_steps: 20
+    guidance_scale: 7.5
+    height: 512
+    width: 512
+    
+  # 质量控制
+  quality_control:
+    clip_score_threshold: 0.75
+    aesthetic_score_threshold: 0.6
+    safety_filter: true
+    
+  # 多样性控制
+  diversity:
+    seed_variation: true
+    prompt_augmentation: true
+    negative_prompts: ["blurry", "low quality", "distorted"]
+    
+  # 缓存配置
+  cache:
+    enabled: true
+    cache_dir: "./data/cache/sd_images"
+    compression: true
+    max_cache_size: "10GB"
+
+# 检测器配置
+detector:
+  type: "ensemble"
+  aggregation: "weighted_mean"
+  confidence_threshold: 0.8
+  
+  # 阈值配置
+  thresholds:
+    direct_similarity: 0.5
+    variant_consistency: 0.85
+    generative_consistency: 0.7
+    overall_confidence: 0.8
+    
+  # 权重配置
+  weights:
+    direct_consistency: 0.3
+    text_variant_consistency: 0.3
+    generative_reference_consistency: 0.4
+    
+  # 决策规则
+  decision_rule: "weighted_ensemble"
+  
+  # 自适应阈值
+  adaptive_threshold:
+    enabled: true
+    update_frequency: 100
+    learning_rate: 0.01
+
+# 模型配置
+models:
+  clip:
+    model_name: "ViT-B/32"
+    device: "cuda"
+    batch_size: 256
+    precision: "fp16"
+    cache_dir: "./data/cache/models/clip"
+    
+  qwen:
+    model_name: "Qwen/Qwen2-1.5B-Instruct"
+    device: "cuda"
+    max_length: 512
+    temperature: 0.7
+    precision: "fp16"
+    cache_dir: "./data/cache/models/qwen"
+    
+  stable_diffusion:
+    model_name: "runwayml/stable-diffusion-v1-5"
+    device: "cuda"
+    precision: "fp16"
+    safety_checker: false
+    cache_dir: "./data/cache/models/sd"
+    enable_xformers: true
+    enable_cpu_offload: false
+
+# 特征提取配置
+feature_extraction:
+  image:
+    normalize: true
+    pooling: "cls"
+    
+  text:
+    normalize: true
+    max_length: 77
+    truncation: true
+    
+  # 生成图像特征聚合
+  generated_aggregation:
+    method: "max"  # max, mean, attention_weighted
+    attention_heads: 8
+    temperature: 0.1
+
+# 批处理配置
+batch:
+  size: 16  # 减少批大小以适应SD生成
+  variant_batch_size: 8
+  sd_batch_size: 4
+  accumulation: false
+  
+# 多GPU配置
+multi_gpu:
+  enabled: true
+  gpu_ids: [0, 1, 2, 3, 4, 5]
+  batch_size_per_gpu: 4
+  model_parallel: true  # SD模型较大，启用模型并行
+  
+  # GPU分配策略
+  allocation:
+    clip: [0, 1]
+    qwen: [2, 3]
+    stable_diffusion: [4, 5]
+  
+# 评估配置
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1_score", "auc_roc", "auc_pr"]
+  cross_validation: false
+  test_time_augmentation: true
+  variant_analysis: true
+  generation_analysis: true
+  
+# 输出配置
+output:
+  save_predictions: true
+  save_features: false
+  save_similarities: true
+  save_variants: true
+  save_generated_images: true
+  detailed_logs: true
+  
+# 性能配置
+performance:
+  precision: "fp16"
+  enable_amp: true
+  gradient_checkpointing: true
+  memory_efficient: true
+  parallel_variant_processing: true
+  parallel_generation: true
+  
+  # 内存优化
+  memory_optimization:
+    enable_attention_slicing: true
+    enable_cpu_offload: false
+    enable_sequential_cpu_offload: false
+    
+# 缓存配置
+cache:
+  enabled: true
+  features: true
+  similarities: true
+  variants: true
+  generated_images: true
+  predictions: false
+  
+  # 缓存策略
+  strategy:
+    eviction_policy: "lru"
+    max_memory_usage: "80%"
+    compression_level: 6
+  
+# 实验配置
+experiment:
+  seed: 42
+  reproducible: true
+  num_runs: 1
+  ablation_studies: true
+  
+  # 消融研究
+  ablations:
+    - "no_text_variants"
+    - "no_generative_refs"
+    - "different_weights"
+  
+# 调试配置
+debug:
+  verbose: false
+  save_intermediate: true
+  profile_performance: true
+  analyze_variants: true
+  analyze_generations: true
+  memory_profiling: true

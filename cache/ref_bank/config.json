@@ -1,0 +1,12 @@
+{
+  "max_size": 1000,
+  "similarity_threshold": 0.8,
+  "clustering_method": "kmeans",
+  "num_clusters": 100,
+  "update_strategy": "fifo",
+  "persistence_enabled": true,
+  "save_path": "./cache/ref_bank",
+  "auto_clustering": false,
+  "clustering_interval": 1000,
+  "feature_dim": 512
+}

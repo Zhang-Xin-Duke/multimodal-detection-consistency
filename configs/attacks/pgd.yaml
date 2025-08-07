@@ -1,0 +1,90 @@
+# PGD (Projected Gradient Descent) 攻击配置
+name: "pgd"
+type: "gradient_based"
+description: "Projected Gradient Descent attack for adversarial example generation"
+
+# 核心攻击参数
+attack_params:
+  epsilon: 0.03137  # 8/255, L∞扰动预算
+  alpha: 0.005  # 步长
+  num_steps: 1000  # 迭代步数
+  random_start: true  # 随机初始化
+  norm: "Linf"  # L∞范数约束
+  
+  # 目标设置
+  targeted: false  # 非定向攻击
+  target_class: null
+  
+  # 损失函数
+  loss_function: "cross_entropy"
+  
+  # 早停条件
+  early_stop: true
+  success_threshold: 0.99  # 攻击成功阈值
+  patience: 50  # 早停耐心值
+
+# 优化配置
+optimization:
+  optimizer: "sgd"
+  momentum: 0.9
+  weight_decay: 0.0
+  lr_scheduler: "step"
+  lr_decay: 0.9
+  lr_decay_steps: 100
+
+# 批处理配置
+batch:
+  size: 32
+  accumulation_steps: 1
+  
+# 多GPU配置
+multi_gpu:
+  enabled: true
+  gpu_ids: [0, 1, 2, 3, 4, 5]
+  batch_size_per_gpu: 8
+  sync_bn: false
+
+# 目标模型配置
+target_model:
+  type: "clip"
+  model_name: "ViT-B/32"
+  freeze_weights: true
+  
+# 评估配置
+evaluation:
+  metrics: ["success_rate", "l2_distance", "linf_distance", "lpips"]
+  save_examples: true
+  num_examples: 100
+  
+# 输出配置
+output:
+  save_adversarial: true
+  save_perturbations: true
+  save_logs: true
+  output_format: "png"
+  
+# 质量控制
+quality:
+  max_perturbation_norm: 0.1
+  min_success_rate: 0.8
+  perceptual_threshold: 0.1
+  
+# 实验配置
+experiment:
+  num_runs: 1
+  seed: 42
+  reproducible: true
+  
+# 性能配置
+performance:
+  precision: "fp32"  # PGD需要高精度
+  enable_amp: false  # 不使用自动混合精度
+  gradient_clipping: 1.0
+  memory_efficient: true
+  
+# 调试配置
+debug:
+  verbose: false
+  save_intermediate: false
+  plot_loss_curve: true
+  check_gradients: false

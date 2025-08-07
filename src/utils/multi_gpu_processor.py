@@ -1,397 +1,728 @@
-"""多GPU并行处理器模块
+"""多GPU处理器模块
 
-提供多GPU并行处理功能，充分利用6块RTX 4090 GPU资源。
+提供多GPU并行处理功能，包括数据分发、模型并行和结果聚合。
+支持动态负载均衡和错误恢复。
 """
 
 import torch
 import torch.nn as nn
-from torch.nn.parallel import DataParallel, DistributedDataParallel
-from typing import List, Dict, Any, Optional, Union, Callable
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
+from typing import List, Dict, Any, Optional, Callable, Union, Tuple
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import queue
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import numpy as np
-from queue import Queue
-import gc
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class MultiGPUConfig:
-    """多GPU配置"""
-    gpu_ids: List[int] = None  # GPU设备ID列表
-    batch_size_per_gpu: int = 4  # 每个GPU的批处理大小
-    max_workers: int = 6  # 最大工作线程数
-    memory_fraction: float = 0.9  # 每个GPU的内存使用比例
-    enable_mixed_precision: bool = True  # 启用混合精度
-    enable_compile: bool = True  # 启用torch.compile
-    load_balancing: bool = True  # 启用负载均衡
+class GPUTask:
+    """GPU任务"""
+    task_id: str
+    data: Any
+    gpu_id: int
+    priority: int = 0
+    created_at: float = None
     
     def __post_init__(self):
-        if self.gpu_ids is None:
-            # 默认使用所有可用GPU
-            self.gpu_ids = list(range(torch.cuda.device_count()))
-        
-        # 确保最大工作线程数不超过GPU数量
-        self.max_workers = min(self.max_workers, len(self.gpu_ids))
+        if self.created_at is None:
+            self.created_at = time.time()
+
+
+@dataclass
+class GPUResult:
+    """GPU处理结果"""
+    task_id: str
+    result: Any
+    gpu_id: int
+    processing_time: float
+    success: bool = True
+    error: Optional[str] = None
 
 
 class GPUWorker:
-    """单个GPU工作器"""
+    """GPU工作器
     
-    def __init__(self, gpu_id: int, config: MultiGPUConfig):
+    在指定GPU上执行任务的工作器。
+    """
+    
+    def __init__(self, gpu_id: int, model_factory: Callable, device_config: Dict[str, Any]):
+        """初始化GPU工作器
+        
+        Args:
+            gpu_id: GPU ID
+            model_factory: 模型工厂函数
+            device_config: 设备配置
+        """
         self.gpu_id = gpu_id
-        self.config = config
         self.device = torch.device(f'cuda:{gpu_id}')
-        self.is_busy = False
-        self.task_queue = Queue()
-        self.result_queue = Queue()
+        self.model_factory = model_factory
+        self.device_config = device_config
         
-        # 设置GPU内存限制
-        self._setup_gpu_memory()
+        self.model = None
+        self.is_initialized = False
+        self.task_queue = queue.Queue()
+        self.result_queue = queue.Queue()
+        self.worker_thread = None
+        self.is_running = False
         
-        logger.info(f"GPU Worker {gpu_id} 初始化完成")
-    
-    def _setup_gpu_memory(self):
-        """设置GPU内存限制"""
+        # 性能统计
+        self.total_tasks = 0
+        self.total_time = 0.0
+        self.error_count = 0
+        
+    def initialize(self):
+        """初始化GPU工作器"""
         try:
             torch.cuda.set_device(self.gpu_id)
-            # 设置内存分配策略
-            torch.cuda.empty_cache()
             
-            # 获取GPU内存信息
-            total_memory = torch.cuda.get_device_properties(self.gpu_id).total_memory
-            allocated_memory = int(total_memory * self.config.memory_fraction)
+            # 创建模型
+            self.model = self.model_factory()
+            self.model = self.model.to(self.device)
             
-            logger.info(f"GPU {self.gpu_id}: 总内存 {total_memory/1024**3:.2f}GB, "
-                       f"分配 {allocated_memory/1024**3:.2f}GB")
+            # 设置模型为评估模式
+            if hasattr(self.model, 'eval'):
+                self.model.eval()
+            
+            # 启用混合精度
+            if self.device_config.get('mixed_precision', False):
+                self.model = self.model.half()
+            
+            self.is_initialized = True
+            logger.info(f"GPU {self.gpu_id} worker initialized successfully")
             
         except Exception as e:
-            logger.warning(f"设置GPU {self.gpu_id} 内存限制失败: {e}")
-    
-    def process_batch(self, model_func: Callable, batch_data: Any, **kwargs) -> Any:
-        """处理批次数据"""
-        self.is_busy = True
-        try:
-            with torch.cuda.device(self.gpu_id):
-                # 移动数据到当前GPU
-                if isinstance(batch_data, torch.Tensor):
-                    batch_data = batch_data.to(self.device)
-                elif isinstance(batch_data, (list, tuple)):
-                    batch_data = [item.to(self.device) if isinstance(item, torch.Tensor) else item 
-                                 for item in batch_data]
-                
-                # 执行模型推理
-                if self.config.enable_mixed_precision:
-                    with torch.cuda.amp.autocast():
-                        result = model_func(batch_data, **kwargs)
-                else:
-                    result = model_func(batch_data, **kwargs)
-                
-                # 移动结果到CPU以节省GPU内存
-                if isinstance(result, torch.Tensor):
-                    result = result.cpu()
-                elif isinstance(result, (list, tuple)):
-                    result = [item.cpu() if isinstance(item, torch.Tensor) else item 
-                             for item in result]
-                
-                return result
-                
-        except Exception as e:
-            logger.error(f"GPU {self.gpu_id} 处理批次失败: {e}")
+            logger.error(f"Failed to initialize GPU {self.gpu_id} worker: {e}")
             raise
-        finally:
-            self.is_busy = False
-            # 清理GPU缓存
-            torch.cuda.empty_cache()
+    
+    def start(self):
+        """启动工作器线程"""
+        if not self.is_initialized:
+            self.initialize()
+        
+        self.is_running = True
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self.worker_thread.start()
+        logger.info(f"GPU {self.gpu_id} worker started")
+    
+    def stop(self):
+        """停止工作器"""
+        self.is_running = False
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=5.0)
+        logger.info(f"GPU {self.gpu_id} worker stopped")
+    
+    def submit_task(self, task: GPUTask):
+        """提交任务
+        
+        Args:
+            task: GPU任务
+        """
+        if not self.is_running:
+            raise RuntimeError(f"GPU {self.gpu_id} worker is not running")
+        
+        self.task_queue.put(task)
+    
+    def get_result(self, timeout: Optional[float] = None) -> Optional[GPUResult]:
+        """获取处理结果
+        
+        Args:
+            timeout: 超时时间
+            
+        Returns:
+            处理结果
+        """
+        try:
+            return self.result_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+    
+    def _worker_loop(self):
+        """工作器主循环"""
+        torch.cuda.set_device(self.gpu_id)
+        
+        while self.is_running:
+            try:
+                # 获取任务
+                task = self.task_queue.get(timeout=1.0)
+                
+                # 处理任务
+                start_time = time.time()
+                result = self._process_task(task)
+                processing_time = time.time() - start_time
+                
+                # 创建结果
+                gpu_result = GPUResult(
+                    task_id=task.task_id,
+                    result=result,
+                    gpu_id=self.gpu_id,
+                    processing_time=processing_time,
+                    success=True
+                )
+                
+                # 更新统计
+                self.total_tasks += 1
+                self.total_time += processing_time
+                
+                # 返回结果
+                self.result_queue.put(gpu_result)
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"GPU {self.gpu_id} worker error: {e}")
+                
+                # 创建错误结果
+                if 'task' in locals():
+                    error_result = GPUResult(
+                        task_id=task.task_id,
+                        result=None,
+                        gpu_id=self.gpu_id,
+                        processing_time=0.0,
+                        success=False,
+                        error=str(e)
+                    )
+                    self.result_queue.put(error_result)
+                
+                self.error_count += 1
+    
+    def _process_task(self, task: GPUTask) -> Any:
+        """处理单个任务
+        
+        Args:
+            task: GPU任务
+            
+        Returns:
+            处理结果
+        """
+        with torch.no_grad():
+            # 将数据移动到GPU
+            if isinstance(task.data, torch.Tensor):
+                data = task.data.to(self.device, non_blocking=True)
+            elif isinstance(task.data, (list, tuple)):
+                data = [d.to(self.device, non_blocking=True) if isinstance(d, torch.Tensor) else d for d in task.data]
+            elif isinstance(task.data, dict):
+                data = {k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v for k, v in task.data.items()}
+            else:
+                data = task.data
+            
+            # 执行模型推理
+            if hasattr(self.model, '__call__'):
+                if isinstance(data, (list, tuple)):
+                    result = self.model(*data)
+                elif isinstance(data, dict):
+                    result = self.model(**data)
+                else:
+                    result = self.model(data)
+            else:
+                raise ValueError(f"Model on GPU {self.gpu_id} is not callable")
+            
+            # 将结果移动到CPU
+            if isinstance(result, torch.Tensor):
+                result = result.cpu()
+            elif isinstance(result, (list, tuple)):
+                result = [r.cpu() if isinstance(r, torch.Tensor) else r for r in result]
+            elif isinstance(result, dict):
+                result = {k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in result.items()}
+            
+            return result
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取工作器统计信息
+        
+        Returns:
+            统计信息
+        """
+        avg_time = self.total_time / max(self.total_tasks, 1)
+        
+        return {
+            'gpu_id': self.gpu_id,
+            'total_tasks': self.total_tasks,
+            'total_time': self.total_time,
+            'avg_time': avg_time,
+            'error_count': self.error_count,
+            'error_rate': self.error_count / max(self.total_tasks, 1),
+            'queue_size': self.task_queue.qsize(),
+            'is_running': self.is_running
+        }
 
 
 class MultiGPUProcessor:
-    """多GPU并行处理器"""
+    """多GPU处理器
     
-    def __init__(self, config: MultiGPUConfig = None):
-        """
-        初始化多GPU处理器
+    管理多个GPU工作器，提供负载均衡和错误恢复功能。
+    """
+    
+    def __init__(self, gpu_ids: List[int], model_factory: Callable, device_config: Dict[str, Any]):
+        """初始化多GPU处理器
         
         Args:
-            config: 多GPU配置
+            gpu_ids: GPU ID列表
+            model_factory: 模型工厂函数
+            device_config: 设备配置
         """
-        self.config = config or MultiGPUConfig()
-        self.workers = {}
-        self.executor = None
-        self.load_stats = {gpu_id: 0 for gpu_id in self.config.gpu_ids}
+        self.gpu_ids = gpu_ids
+        self.model_factory = model_factory
+        self.device_config = device_config
         
-        # 检查GPU可用性
-        self._check_gpu_availability()
+        # 创建GPU工作器
+        self.workers: Dict[int, GPUWorker] = {}
+        for gpu_id in gpu_ids:
+            self.workers[gpu_id] = GPUWorker(gpu_id, model_factory, device_config)
         
-        # 初始化GPU工作器
-        self._initialize_workers()
+        # 负载均衡
+        self.load_balancer = self.device_config.get('load_balancer', 'round_robin')
+        self.current_gpu_index = 0
         
-        # 初始化线程池
-        self.executor = ThreadPoolExecutor(max_workers=self.config.max_workers)
+        # 任务管理
+        self.pending_tasks: Dict[str, GPUTask] = {}
+        self.completed_results: Dict[str, GPUResult] = {}
         
-        logger.info(f"多GPU处理器初始化完成，使用GPU: {self.config.gpu_ids}")
+        # 统计信息
+        self.total_submitted = 0
+        self.total_completed = 0
+        
+        self.is_running = False
     
-    def _check_gpu_availability(self):
-        """检查GPU可用性"""
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA不可用")
+    def start(self):
+        """启动所有GPU工作器"""
+        logger.info(f"Starting MultiGPU processor with {len(self.gpu_ids)} GPUs")
         
-        available_gpus = torch.cuda.device_count()
-        if max(self.config.gpu_ids) >= available_gpus:
-            raise ValueError(f"请求的GPU ID超出可用范围，可用GPU数量: {available_gpus}")
+        for worker in self.workers.values():
+            worker.start()
         
-        # 检查每个GPU的状态
-        for gpu_id in self.config.gpu_ids:
-            try:
-                torch.cuda.set_device(gpu_id)
-                # 测试GPU内存分配
-                test_tensor = torch.randn(100, 100, device=f'cuda:{gpu_id}')
-                del test_tensor
-                torch.cuda.empty_cache()
-                logger.info(f"GPU {gpu_id} 可用")
-            except Exception as e:
-                logger.error(f"GPU {gpu_id} 不可用: {e}")
-                raise
+        self.is_running = True
+        logger.info("MultiGPU processor started successfully")
     
-    def _initialize_workers(self):
-        """初始化GPU工作器"""
-        for gpu_id in self.config.gpu_ids:
-            self.workers[gpu_id] = GPUWorker(gpu_id, self.config)
+    def stop(self):
+        """停止所有GPU工作器"""
+        logger.info("Stopping MultiGPU processor")
+        
+        for worker in self.workers.values():
+            worker.stop()
+        
+        self.is_running = False
+        logger.info("MultiGPU processor stopped")
     
-    def _get_optimal_gpu(self) -> int:
-        """获取最优GPU（负载最低）"""
-        if self.config.load_balancing:
-            return min(self.load_stats.keys(), key=lambda x: self.load_stats[x])
-        else:
-            # 轮询分配
-            return self.config.gpu_ids[len(self.load_stats) % len(self.config.gpu_ids)]
-    
-    def parallel_process(self, model_func: Callable, data_batches: List[Any], 
-                        **kwargs) -> List[Any]:
-        """
-        并行处理数据批次
+    def submit_batch(self, data_batch: List[Any], task_ids: Optional[List[str]] = None) -> List[str]:
+        """提交批量任务
         
         Args:
-            model_func: 模型处理函数
-            data_batches: 数据批次列表
-            **kwargs: 额外参数
-        
+            data_batch: 数据批次
+            task_ids: 任务ID列表
+            
         Returns:
-            处理结果列表
+            任务ID列表
         """
-        if not data_batches:
-            return []
+        if not self.is_running:
+            raise RuntimeError("MultiGPU processor is not running")
         
-        # 分配任务到GPU
-        futures = []
-        results = [None] * len(data_batches)
+        if task_ids is None:
+            task_ids = [f"task_{self.total_submitted + i}" for i in range(len(data_batch))]
         
-        for i, batch in enumerate(data_batches):
-            # 选择最优GPU
-            gpu_id = self._get_optimal_gpu()
-            worker = self.workers[gpu_id]
+        if len(task_ids) != len(data_batch):
+            raise ValueError("task_ids and data_batch must have the same length")
+        
+        submitted_ids = []
+        
+        for i, (data, task_id) in enumerate(zip(data_batch, task_ids)):
+            # 选择GPU
+            gpu_id = self._select_gpu()
+            
+            # 创建任务
+            task = GPUTask(
+                task_id=task_id,
+                data=data,
+                gpu_id=gpu_id
+            )
             
             # 提交任务
-            future = self.executor.submit(
-                worker.process_batch, model_func, batch, **kwargs
-            )
-            futures.append((i, future, gpu_id))
+            self.workers[gpu_id].submit_task(task)
+            self.pending_tasks[task_id] = task
             
-            # 更新负载统计
-            self.load_stats[gpu_id] += 1
+            submitted_ids.append(task_id)
+            self.total_submitted += 1
         
-        # 收集结果
-        for batch_idx, future, gpu_id in futures:
-            try:
-                result = future.result()
-                results[batch_idx] = result
-                
-                # 更新负载统计
-                self.load_stats[gpu_id] -= 1
-                
-            except Exception as e:
-                logger.error(f"批次 {batch_idx} 在GPU {gpu_id} 上处理失败: {e}")
-                raise
+        return submitted_ids
+    
+    def get_results(self, task_ids: List[str], timeout: Optional[float] = None) -> Dict[str, GPUResult]:
+        """获取任务结果
+        
+        Args:
+            task_ids: 任务ID列表
+            timeout: 超时时间
+            
+        Returns:
+            任务结果字典
+        """
+        results = {}
+        start_time = time.time()
+        
+        while len(results) < len(task_ids):
+            # 检查超时
+            if timeout and (time.time() - start_time) > timeout:
+                break
+            
+            # 从所有工作器收集结果
+            for worker in self.workers.values():
+                result = worker.get_result(timeout=0.1)
+                if result and result.task_id in task_ids:
+                    results[result.task_id] = result
+                    self.completed_results[result.task_id] = result
+                    
+                    # 从待处理任务中移除
+                    if result.task_id in self.pending_tasks:
+                        del self.pending_tasks[result.task_id]
+                    
+                    self.total_completed += 1
         
         return results
     
-    def parallel_clip_encode(self, clip_model, texts: List[str], 
-                           batch_size: Optional[int] = None) -> torch.Tensor:
-        """
-        并行CLIP文本编码
+    def process_batch(self, data_batch: List[Any], timeout: Optional[float] = None) -> List[Any]:
+        """处理批量数据（同步）
         
         Args:
-            clip_model: CLIP模型实例
-            texts: 文本列表
-            batch_size: 批处理大小
+            data_batch: 数据批次
+            timeout: 超时时间
+            
+        Returns:
+            处理结果列表
+        """
+        # 提交任务
+        task_ids = self.submit_batch(data_batch)
+        
+        # 获取结果
+        results = self.get_results(task_ids, timeout=timeout)
+        
+        # 按原始顺序排列结果
+        ordered_results = []
+        for task_id in task_ids:
+            if task_id in results:
+                result = results[task_id]
+                if result.success:
+                    ordered_results.append(result.result)
+                else:
+                    raise RuntimeError(f"Task {task_id} failed: {result.error}")
+            else:
+                raise TimeoutError(f"Task {task_id} timed out")
+        
+        return ordered_results
+    
+    def _select_gpu(self) -> int:
+        """选择GPU进行负载均衡
         
         Returns:
-            编码特征张量
+            选中的GPU ID
         """
-        batch_size = batch_size or self.config.batch_size_per_gpu
+        if self.load_balancer == 'round_robin':
+            gpu_id = self.gpu_ids[self.current_gpu_index]
+            self.current_gpu_index = (self.current_gpu_index + 1) % len(self.gpu_ids)
+            return gpu_id
         
-        # 创建批次
-        text_batches = [texts[i:i + batch_size] 
-                       for i in range(0, len(texts), batch_size)]
+        elif self.load_balancer == 'least_busy':
+            # 选择队列最短的GPU
+            min_queue_size = float('inf')
+            selected_gpu = self.gpu_ids[0]
+            
+            for gpu_id in self.gpu_ids:
+                queue_size = self.workers[gpu_id].task_queue.qsize()
+                if queue_size < min_queue_size:
+                    min_queue_size = queue_size
+                    selected_gpu = gpu_id
+            
+            return selected_gpu
         
-        # 定义编码函数
-        def encode_func(text_batch):
-            return clip_model.encode_text(text_batch)
+        elif self.load_balancer == 'random':
+            return np.random.choice(self.gpu_ids)
         
-        # 并行处理
-        results = self.parallel_process(encode_func, text_batches)
-        
-        # 合并结果
-        return torch.cat([r for r in results if r is not None], dim=0)
+        else:
+            # 默认轮询
+            return self.gpu_ids[self.current_gpu_index % len(self.gpu_ids)]
     
-    def parallel_sd_generate(self, sd_models: Dict[int, Any], prompts: List[str],
-                           **generation_kwargs) -> List[Any]:
-        """
-        并行Stable Diffusion图像生成
-        
-        Args:
-            sd_models: GPU ID到SD模型的映射
-            prompts: 提示词列表
-            **generation_kwargs: 生成参数
+    def get_stats(self) -> Dict[str, Any]:
+        """获取处理器统计信息
         
         Returns:
-            生成的图像列表
+            统计信息
         """
-        # 创建批次
-        batch_size = self.config.batch_size_per_gpu
-        prompt_batches = [prompts[i:i + batch_size] 
-                         for i in range(0, len(prompts), batch_size)]
+        worker_stats = {gpu_id: worker.get_stats() for gpu_id, worker in self.workers.items()}
         
-        # 分配任务到不同GPU
-        futures = []
-        results = [None] * len(prompt_batches)
+        total_tasks = sum(stats['total_tasks'] for stats in worker_stats.values())
+        total_time = sum(stats['total_time'] for stats in worker_stats.values())
+        total_errors = sum(stats['error_count'] for stats in worker_stats.values())
         
-        for i, prompt_batch in enumerate(prompt_batches):
-            gpu_id = self.config.gpu_ids[i % len(self.config.gpu_ids)]
-            sd_model = sd_models[gpu_id]
-            
-            def generate_func(prompts_batch):
-                images = []
-                for prompt in prompts_batch:
-                    image = sd_model.generate_image(prompt, **generation_kwargs)
-                    images.extend(image if isinstance(image, list) else [image])
-                return images
-            
-            future = self.executor.submit(generate_func, prompt_batch)
-            futures.append((i, future))
-        
-        # 收集结果
-        all_images = []
-        for batch_idx, future in futures:
-            try:
-                batch_images = future.result()
-                all_images.extend(batch_images)
-            except Exception as e:
-                logger.error(f"SD生成批次 {batch_idx} 失败: {e}")
-                raise
-        
-        return all_images
-    
-    def get_gpu_stats(self) -> Dict[str, Any]:
-        """获取GPU统计信息"""
-        stats = {
-            'gpu_count': len(self.config.gpu_ids),
-            'gpu_ids': self.config.gpu_ids,
-            'load_stats': self.load_stats.copy(),
-            'memory_stats': {}
+        return {
+            'total_submitted': self.total_submitted,
+            'total_completed': self.total_completed,
+            'pending_tasks': len(self.pending_tasks),
+            'total_tasks': total_tasks,
+            'total_time': total_time,
+            'total_errors': total_errors,
+            'avg_time': total_time / max(total_tasks, 1),
+            'error_rate': total_errors / max(total_tasks, 1),
+            'worker_stats': worker_stats,
+            'is_running': self.is_running
         }
+    
+    def print_stats(self):
+        """打印统计信息"""
+        stats = self.get_stats()
         
-        for gpu_id in self.config.gpu_ids:
-            try:
-                torch.cuda.set_device(gpu_id)
-                memory_allocated = torch.cuda.memory_allocated(gpu_id)
-                memory_reserved = torch.cuda.memory_reserved(gpu_id)
-                memory_total = torch.cuda.get_device_properties(gpu_id).total_memory
-                
-                stats['memory_stats'][gpu_id] = {
-                    'allocated_mb': memory_allocated / 1024**2,
-                    'reserved_mb': memory_reserved / 1024**2,
-                    'total_mb': memory_total / 1024**2,
-                    'utilization': memory_allocated / memory_total * 100
-                }
-            except Exception as e:
-                logger.warning(f"获取GPU {gpu_id} 统计信息失败: {e}")
+        print("=== MultiGPU Processor Stats ===")
+        print(f"Total submitted: {stats['total_submitted']}")
+        print(f"Total completed: {stats['total_completed']}")
+        print(f"Pending tasks: {stats['pending_tasks']}")
+        print(f"Average processing time: {stats['avg_time']:.3f}s")
+        print(f"Error rate: {stats['error_rate']:.2%}")
         
-        return stats
+        print("\nWorker Stats:")
+        for gpu_id, worker_stats in stats['worker_stats'].items():
+            print(f"  GPU {gpu_id}: {worker_stats['total_tasks']} tasks, "
+                  f"{worker_stats['avg_time']:.3f}s avg, "
+                  f"{worker_stats['error_rate']:.2%} error rate, "
+                  f"queue: {worker_stats['queue_size']}")
+        
+        print("==============================")
+
+
+class DistributedProcessor:
+    """分布式处理器
+    
+    支持多节点分布式处理。
+    """
+    
+    def __init__(self, rank: int, world_size: int, backend: str = 'nccl'):
+        """初始化分布式处理器
+        
+        Args:
+            rank: 当前进程排名
+            world_size: 总进程数
+            backend: 分布式后端
+        """
+        self.rank = rank
+        self.world_size = world_size
+        self.backend = backend
+        self.is_initialized = False
+    
+    def initialize(self, master_addr: str = 'localhost', master_port: str = '12355'):
+        """初始化分布式环境
+        
+        Args:
+            master_addr: 主节点地址
+            master_port: 主节点端口
+        """
+        import os
+        
+        os.environ['MASTER_ADDR'] = master_addr
+        os.environ['MASTER_PORT'] = master_port
+        
+        dist.init_process_group(
+            backend=self.backend,
+            rank=self.rank,
+            world_size=self.world_size
+        )
+        
+        self.is_initialized = True
+        logger.info(f"Distributed processor initialized: rank {self.rank}/{self.world_size}")
+    
+    def wrap_model(self, model: nn.Module, device_ids: Optional[List[int]] = None) -> DDP:
+        """包装模型为分布式模型
+        
+        Args:
+            model: 原始模型
+            device_ids: 设备ID列表
+            
+        Returns:
+            分布式模型
+        """
+        if not self.is_initialized:
+            raise RuntimeError("Distributed processor not initialized")
+        
+        if device_ids is None:
+            device_ids = [self.rank]
+        
+        ddp_model = DDP(model, device_ids=device_ids)
+        return ddp_model
+    
+    def create_dataloader(self, dataset, batch_size: int, **kwargs) -> DataLoader:
+        """创建分布式数据加载器
+        
+        Args:
+            dataset: 数据集
+            batch_size: 批处理大小
+            **kwargs: 其他参数
+            
+        Returns:
+            数据加载器
+        """
+        if not self.is_initialized:
+            raise RuntimeError("Distributed processor not initialized")
+        
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=self.world_size,
+            rank=self.rank,
+            shuffle=kwargs.pop('shuffle', True)
+        )
+        
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            **kwargs
+        )
+        
+        return dataloader
+    
+    def all_gather(self, tensor: torch.Tensor) -> List[torch.Tensor]:
+        """收集所有进程的张量
+        
+        Args:
+            tensor: 输入张量
+            
+        Returns:
+            所有进程的张量列表
+        """
+        if not self.is_initialized:
+            raise RuntimeError("Distributed processor not initialized")
+        
+        tensor_list = [torch.zeros_like(tensor) for _ in range(self.world_size)]
+        dist.all_gather(tensor_list, tensor)
+        return tensor_list
+    
+    def all_reduce(self, tensor: torch.Tensor, op=dist.ReduceOp.SUM) -> torch.Tensor:
+        """归约所有进程的张量
+        
+        Args:
+            tensor: 输入张量
+            op: 归约操作
+            
+        Returns:
+            归约后的张量
+        """
+        if not self.is_initialized:
+            raise RuntimeError("Distributed processor not initialized")
+        
+        dist.all_reduce(tensor, op=op)
+        return tensor
     
     def cleanup(self):
-        """清理资源"""
-        if self.executor:
-            self.executor.shutdown(wait=True)
+        """清理分布式环境"""
+        if self.is_initialized:
+            dist.destroy_process_group()
+            self.is_initialized = False
+            logger.info("Distributed processor cleaned up")
+
+
+@dataclass
+class MultiGPUConfig:
+    """多GPU配置数据类
+    
+    存储多GPU处理的配置信息。
+    """
+    # GPU设备配置
+    gpu_ids: List[int] = None
+    device_map: Dict[str, int] = None
+    
+    # 并行处理配置
+    batch_size_per_gpu: int = 8
+    num_workers_per_gpu: int = 2
+    max_concurrent_tasks: int = 16
+    
+    # 负载均衡配置
+    enable_load_balancing: bool = True
+    memory_threshold: float = 0.8
+    task_timeout: float = 300.0
+    
+    # 分布式配置
+    backend: str = 'nccl'
+    init_method: str = 'env://'
+    world_size: int = 1
+    rank: int = 0
+    
+    # 性能优化配置
+    use_mixed_precision: bool = True
+    gradient_accumulation_steps: int = 1
+    pin_memory: bool = True
+    
+    def __post_init__(self):
+        """初始化后处理"""
+        if self.gpu_ids is None:
+            self.gpu_ids = list(range(torch.cuda.device_count()))
+        if self.device_map is None:
+            self.device_map = {}
+    
+    @classmethod
+    def from_hardware_config(cls, hardware_config) -> 'MultiGPUConfig':
+        """从硬件配置创建多GPU配置
         
-        # 清理GPU缓存
-        for gpu_id in self.config.gpu_ids:
-            try:
-                torch.cuda.set_device(gpu_id)
-                torch.cuda.empty_cache()
-            except Exception as e:
-                logger.warning(f"清理GPU {gpu_id} 缓存失败: {e}")
+        Args:
+            hardware_config: 硬件配置对象
+            
+        Returns:
+            MultiGPUConfig: 多GPU配置实例
+        """
+        gpu_count = getattr(hardware_config, 'gpu_count', 0)
+        total_memory = getattr(hardware_config, 'total_gpu_memory', 0)
         
-        logger.info("多GPU处理器资源清理完成")
+        # 根据GPU数量和内存调整配置
+        batch_size_per_gpu = 8 if total_memory > 20000 else 4
+        max_concurrent_tasks = min(gpu_count * 4, 32)
+        
+        return cls(
+            gpu_ids=list(range(gpu_count)) if gpu_count > 0 else [],
+            batch_size_per_gpu=batch_size_per_gpu,
+            max_concurrent_tasks=max_concurrent_tasks,
+            world_size=gpu_count,
+            use_mixed_precision=total_memory > 10000
+        )
     
-    def __enter__(self):
-        return self
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典
+        
+        Returns:
+            Dict[str, Any]: 配置字典
+        """
+        return {
+            'gpu_ids': self.gpu_ids,
+            'device_map': self.device_map,
+            'batch_size_per_gpu': self.batch_size_per_gpu,
+            'num_workers_per_gpu': self.num_workers_per_gpu,
+            'max_concurrent_tasks': self.max_concurrent_tasks,
+            'enable_load_balancing': self.enable_load_balancing,
+            'memory_threshold': self.memory_threshold,
+            'task_timeout': self.task_timeout,
+            'backend': self.backend,
+            'init_method': self.init_method,
+            'world_size': self.world_size,
+            'rank': self.rank,
+            'use_mixed_precision': self.use_mixed_precision,
+            'gradient_accumulation_steps': self.gradient_accumulation_steps,
+            'pin_memory': self.pin_memory
+        }
     
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.cleanup()
-
-
-def create_multi_gpu_processor(gpu_ids: Optional[List[int]] = None,
-                              batch_size_per_gpu: int = 4) -> MultiGPUProcessor:
-    """
-    创建多GPU处理器的便捷函数
-    
-    Args:
-        gpu_ids: GPU设备ID列表，默认使用所有可用GPU
-        batch_size_per_gpu: 每个GPU的批处理大小
-    
-    Returns:
-        多GPU处理器实例
-    """
-    config = MultiGPUConfig(
-        gpu_ids=gpu_ids,
-        batch_size_per_gpu=batch_size_per_gpu
-    )
-    return MultiGPUProcessor(config)
-
-
-# 全局多GPU处理器实例（单例模式）
-_global_processor = None
-_processor_lock = threading.Lock()
-
-
-def get_global_multi_gpu_processor() -> MultiGPUProcessor:
-    """
-    获取全局多GPU处理器实例（单例模式）
-    
-    Returns:
-        全局多GPU处理器实例
-    """
-    global _global_processor
-    
-    if _global_processor is None:
-        with _processor_lock:
-            if _global_processor is None:
-                _global_processor = create_multi_gpu_processor()
-    
-    return _global_processor
-
-
-def cleanup_global_processor():
-    """清理全局多GPU处理器"""
-    global _global_processor
-    
-    if _global_processor is not None:
-        with _processor_lock:
-            if _global_processor is not None:
-                _global_processor.cleanup()
-                _global_processor = None
+    def validate(self) -> bool:
+        """验证配置有效性
+        
+        Returns:
+            bool: 配置是否有效
+        """
+        if not self.gpu_ids:
+            logger.warning("No GPU IDs specified")
+            return False
+        
+        if self.batch_size_per_gpu <= 0:
+            logger.error("Batch size per GPU must be positive")
+            return False
+        
+        if self.memory_threshold <= 0 or self.memory_threshold > 1:
+            logger.error("Memory threshold must be between 0 and 1")
+            return False
+        
+        return True

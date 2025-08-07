@@ -1,0 +1,69 @@
+# COCO + Hubness + 完整防御实验配置
+name: "coco_hubness_full_experiment"
+description: "Complete experiment: COCO dataset + Hubness attack + full defense (TVC + GenRef)"
+version: "1.0"
+
+# 继承基础配置
+inherits:
+  - "../default.yaml"
+  - "../datasets/coco.yaml"
+  - "../attacks/hubness.yaml"
+  - "../defenses/base.yaml"
+
+# 实验特定覆盖配置
+overrides:
+  # 数据集配置覆盖
+  dataset:
+    sampling:
+      num_samples: 1000  # 实验样本数
+      strategy: "stratified"  # 分层采样确保代表性
+      
+  # 攻击配置覆盖
+  attack:
+    parameters:
+      num_iterations: 100  # 适中的迭代次数
+      k_neighbors: 20      # 适合COCO的k近邻数量
+      epsilon: 0.031       # 8/255
+      learning_rate: 0.02
+      num_target_queries: 80  # 适合COCO的目标查询数量
+      
+  # 防御配置覆盖
+  defense:
+    text_variants:
+      enabled: true
+      num_variants: 5
+      strategies: ["synonym", "paraphrase", "reorder"]
+    generative_reference:
+      enabled: true
+      num_references: 3
+    detector:
+      weights:
+        direct_consistency: 0.25
+        text_variant_consistency: 0.35
+        generative_reference_consistency: 0.4
+
+# 实验流程配置
+workflow:
+  stages:
+    - "data_preparation"
+    - "attack_generation"
+    - "defense_evaluation"
+    - "metrics_calculation"
+    - "visualization"
+
+# 评估指标
+metrics:
+  - "attack_success_rate"
+  - "defense_success_rate"
+  - "top_k_retrieval_accuracy"
+  - "detection_rate"
+  - "false_positive_rate"
+  - "computational_overhead"
+
+# 输出配置
+output:
+  save_adversarial_samples: true
+  save_detection_results: true
+  save_metrics: true
+  generate_visualizations: true
+  results_dir: "results/coco_hubness_full"

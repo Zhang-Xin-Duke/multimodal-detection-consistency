@@ -1,0 +1,111 @@
+# 基础防御配置 - 仅直接一致性检测
+name: "base_defense"
+type: "consistency_based"
+description: "Basic defense using direct consistency analysis only"
+
+# 防御策略
+strategy:
+  type: "direct_consistency"
+  components:
+    - "image_text_similarity"
+  
+# 一致性检测配置
+consistency:
+  # 直接一致性
+  direct:
+    enabled: true
+    similarity_metric: "cosine"
+    threshold: 0.5
+    normalize_features: true
+    
+  # 文本变体一致性（禁用）
+  text_variant:
+    enabled: false
+    
+  # 生成参考一致性（禁用）
+  generative_reference:
+    enabled: false
+
+# 检测器配置
+detector:
+  type: "threshold_based"
+  aggregation: "mean"  # mean, max, min, weighted
+  confidence_threshold: 0.8
+  
+  # 阈值配置
+  thresholds:
+    similarity: 0.5
+    confidence: 0.8
+    
+  # 决策规则
+  decision_rule: "single_threshold"  # single_threshold, ensemble, voting
+
+# 模型配置
+models:
+  clip:
+    model_name: "ViT-B/32"
+    device: "cuda"
+    batch_size: 256
+    precision: "fp16"
+    cache_dir: "./data/cache/models/clip"
+
+# 特征提取配置
+feature_extraction:
+  image:
+    normalize: true
+    pooling: "cls"  # cls, mean, max
+    
+  text:
+    normalize: true
+    max_length: 77
+    truncation: true
+
+# 批处理配置
+batch:
+  size: 32
+  accumulation: false
+  
+# 多GPU配置
+multi_gpu:
+  enabled: true
+  gpu_ids: [0, 1, 2, 3, 4, 5]
+  batch_size_per_gpu: 8
+  
+# 评估配置
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1_score", "auc_roc", "auc_pr"]
+  cross_validation: false
+  test_time_augmentation: false
+  
+# 输出配置
+output:
+  save_predictions: true
+  save_features: false
+  save_similarities: true
+  detailed_logs: false
+  
+# 性能配置
+performance:
+  precision: "fp16"
+  enable_amp: true
+  gradient_checkpointing: false
+  memory_efficient: true
+  
+# 缓存配置
+cache:
+  enabled: true
+  features: true
+  similarities: true
+  predictions: false
+  
+# 实验配置
+experiment:
+  seed: 42
+  reproducible: true
+  num_runs: 1
+  
+# 调试配置
+debug:
+  verbose: false
+  save_intermediate: false
+  profile_performance: false

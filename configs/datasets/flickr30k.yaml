@@ -1,0 +1,103 @@
+# Flickr30k数据集配置
+# 30,000张图像，每张图像有5个人工标注的描述
+
+dataset:
+  name: "flickr30k"
+  type: "image_text"
+  
+  # 数据路径
+  paths:
+    root: "data/raw/flickr30k"
+    images: "data/raw/flickr30k/flickr30k_images"
+    annotations: "data/raw/flickr30k/results_20130124.token"
+    
+  # 数据分割
+  splits:
+    train:
+      size: 29000
+      start_idx: 0
+      end_idx: 29000
+    val:
+      size: 1000
+      start_idx: 29000
+      end_idx: 30000
+    test:
+      size: 1000
+      start_idx: 29000
+      end_idx: 30000
+      
+  # 数据加载配置
+  loading:
+    batch_size: 64
+    num_workers: 4
+    pin_memory: true
+    shuffle: true
+    drop_last: false
+    
+  # 图像预处理
+  image_preprocessing:
+    resize: [224, 224]
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+    augmentation:
+      horizontal_flip: 0.5
+      color_jitter:
+        brightness: 0.1
+        contrast: 0.1
+        saturation: 0.1
+        hue: 0.05
+      
+  # 文本预处理
+  text_preprocessing:
+    max_length: 77
+    tokenizer: "clip"
+    lowercase: true
+    remove_punctuation: false
+    
+  # 采样配置
+  sampling:
+    strategy: "random"      # random, balanced, weighted
+    max_samples_per_class: null
+    min_samples_per_class: 1
+    
+  # 缓存配置
+  cache:
+    enabled: true
+    cache_dir: "data/cache/flickr30k"
+    features_cache: "data/cache/features/flickr30k_features.pkl"
+    
+  # 验证配置
+  validation:
+    check_images: true
+    check_annotations: true
+    min_image_size: [32, 32]
+    max_image_size: [2048, 2048]
+    
+# 评估配置
+evaluation:
+  metrics:
+    - "retrieval_recall@1"
+    - "retrieval_recall@5"
+    - "retrieval_recall@10"
+    - "image_to_text_recall"
+    - "text_to_image_recall"
+    
+  # 检索配置
+  retrieval:
+    top_k: [1, 5, 10, 20]
+    similarity_metric: "cosine"
+    normalize_features: true
+    
+# 实验配置
+experiment:
+  seed: 42
+  deterministic: true
+  benchmark: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  log_interval: 100
+  save_samples: true
+  sample_save_path: "experiments/logs/flickr30k_samples"

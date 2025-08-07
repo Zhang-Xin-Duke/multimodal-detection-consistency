@@ -1,0 +1,99 @@
+# 效率分析配置：Stable Diffusion生成模块
+# 作者: 张昕 (zhang.xin@duke.edu)
+# 机构: Duke University
+
+# 继承基础配置
+inherits:
+  - ../default.yaml
+  - ../datasets/coco.yaml
+  - ../attacks/pgd.yaml
+
+# 实验特定配置
+experiment:
+  name: "efficiency_generative_ref"
+  description: "效率分析：仅测试Stable Diffusion生成模块的性能（图像合成及CLIP编码）"
+  type: "efficiency"
+  
+# 数据集配置覆盖
+dataset:
+  name: "coco"
+  num_samples: 100  # 效率测试使用小样本
+  
+# 攻击配置覆盖
+attack:
+  method: "pgd"
+  params:
+    epsilon: 8
+    alpha: 2
+    num_iter: 10
+    batch_size: 8  # SD生成需要更小批次
+    
+# 防御配置覆盖 - 仅启用生成参考
+defense:
+  text_variants:
+    enabled: false  # 禁用其他模块
+    
+  retrieval_reference:
+    enabled: false  # 禁用其他模块
+    
+  generative_reference:
+    enabled: true
+    num_images: 3
+    model: "stable-diffusion-v1-5"
+    guidance_scale: 7.5
+    num_inference_steps: 20
+    height: 512
+    width: 512
+    batch_size: 1  # SD批次大小
+    
+  consistency_detection:
+    enabled: false  # 禁用其他模块
+    
+# 实验流程
+stages:
+  - "data_loading"
+  - "attack_generation"
+  - "generative_reference"  # 仅生成参考
+  - "evaluation"
+  
+# 评估配置
+evaluation:
+  metrics:
+    - "processing_time"
+    - "gpu_memory"
+    - "cpu_usage"
+    - "memory_usage"
+    - "throughput"
+    - "generation_time"
+    - "encoding_time"
+    
+# 性能分析配置
+performance_analysis:
+  enabled: true
+  detailed_timing: true
+  memory_profiling: true
+  gpu_profiling: true
+  iterations: 5  # SD生成较慢，减少迭代次数
+  warmup_iterations: 2
+  profile_stable_diffusion: true
+  
+# 输出配置
+output:
+  save_results: true
+  generate_plots: true
+  save_intermediate: false
+  save_profiling_data: true
+  save_generated_images: false  # 节省存储空间
+  
+# 性能配置
+performance:
+  batch_size: 8
+  num_workers: 2
+  device: "cuda"
+  mixed_precision: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "efficiency_generative_ref.log"

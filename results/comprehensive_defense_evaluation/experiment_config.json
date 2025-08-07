@@ -1,0 +1,343 @@
+{
+  "args": {
+    "config": "configs/experiments/coco_pgd_full.yaml",
+    "experiment_name": "multimodal_detection_experiment",
+    "output_dir": "results/comprehensive_defense_evaluation",
+    "dataset": "coco",
+    "data_dir": "./data",
+    "num_samples": 100,
+    "attack_method": "hubness",
+    "attack_ratio": 0.3,
+    "clip_model": "ViT-B/32",
+    "qwen_model": null,
+    "sd_model": "runwayml/stable-diffusion-v1-5",
+    "use_cross_validation": false,
+    "cv_folds": 5,
+    "generate_plots": true,
+    "device": "cuda",
+    "batch_size": 32,
+    "data_size": 100,
+    "experiment_mode": "comprehensive",
+    "datasets": [
+      "coco",
+      "flickr30k",
+      "cc3m",
+      "visual_genome"
+    ],
+    "attack_methods": [
+      "pgd",
+      "hubness",
+      "fsta",
+      "sma"
+    ],
+    "baseline_methods": [
+      "no_defense",
+      "unimodal_anomaly",
+      "random_variants",
+      "retrieval_only",
+      "generative_only"
+    ],
+    "ablation_components": [
+      "text_augment",
+      "retrieval_ref",
+      "generative_ref"
+    ],
+    "debug": true,
+    "verbose": true
+  },
+  "config": {
+    "model": {
+      "clip_model_name": "ViT-B/32",
+      "clip_device": "cuda",
+      "clip_batch_size": 256,
+      "qwen_api_key": "sk-fda43c38cc2f4012ac44da3848e79586",
+      "qwen_model_name": "qwen-turbo",
+      "qwen_max_tokens": 512,
+      "qwen_temperature": 0.7,
+      "sd_model_name": "runwayml/stable-diffusion-v1-5",
+      "sd_device": "cuda",
+      "sd_batch_size": 4,
+      "sd_num_inference_steps": 20,
+      "sd_guidance_scale": 7.5,
+      "sd_height": 512,
+      "sd_width": 512
+    },
+    "models": {
+      "clip": {
+        "model_name": "ViT-B/32"
+      },
+      "stable_diffusion": {
+        "model_name": "runwayml/stable-diffusion-v1-5"
+      }
+    },
+    "data": {
+      "coco_root": "./data/raw/coco",
+      "flickr30k_root": "./data/raw/flickr30k",
+      "processed_root": "./data/processed",
+      "cc3m_root": "./data/raw/cc3m",
+      "visual_genome_root": "./data/raw/visual_genome",
+      "batch_size": 32,
+      "num_workers": 4,
+      "shuffle": true,
+      "pin_memory": true,
+      "image_size": 224,
+      "normalize_mean": [
+        0.485,
+        0.456,
+        0.406
+      ],
+      "normalize_std": [
+        0.229,
+        0.224,
+        0.225
+      ],
+      "validate_images": true,
+      "skip_corrupted": true,
+      "max_retries": 3
+    },
+    "experiment": {
+      "experiment_name": "multimodal_consistency_experiment",
+      "output_dir": "./outputs",
+      "log_level": "INFO",
+      "seed": 42,
+      "device": "cuda",
+      "num_gpus": 6,
+      "gpu_memory_fraction": 0.8,
+      "enable_cache": true,
+      "cache_dir": "./cache",
+      "cache_size_limit": "50GB",
+      "batch_size": 32
+    },
+    "attack": {
+      "hubness_k": 10,
+      "hubness_alpha": 0.1,
+      "hubness_max_iterations": 1000,
+      "hubness_epsilon": 0.06274509803921569,
+      "hubness_lr": 0.02,
+      "hubness_gamma_epochs": 300,
+      "hubness_modality": "vision",
+      "hubness_batch_size": 1,
+      "pgd_epsilon": 0.03137254901960784,
+      "pgd_alpha": 0.00784313725490196,
+      "pgd_steps": 10,
+      "text_attack_method": "textfooler",
+      "text_attack_max_candidates": 50
+    },
+    "defense": {
+      "num_text_variants": 10,
+      "text_similarity_threshold": 0.85,
+      "text_max_retries": 3,
+      "retrieval_top_k": 20,
+      "retrieval_similarity_metric": "cosine",
+      "sd_num_images_per_text": 3,
+      "sd_enable_cache": true,
+      "detection_threshold": 0.5,
+      "detection_aggregation_method": "mean",
+      "detection_enable_adaptive": true
+    },
+    "evaluation": {
+      "metrics": [
+        "accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "auc"
+      ],
+      "test_split_ratio": 0.2,
+      "validation_split_ratio": 0.1,
+      "cross_validation_folds": 5,
+      "save_plots": true,
+      "plot_format": "png",
+      "plot_dpi": 300
+    },
+    "text_augment": {},
+    "retrieval": {},
+    "sd_reference": {},
+    "reference_bank": {},
+    "detector": {},
+    "pipeline": {},
+    "logging": {},
+    "visualization": {},
+    "cache": {},
+    "name": "coco_pgd_full_experiment",
+    "description": "Complete experiment: COCO dataset + PGD attack + full defense (TVC + GenRef)",
+    "version": "1.0",
+    "inherits": [
+      "../default.yaml",
+      "../datasets/coco.yaml",
+      "../attacks/pgd.yaml",
+      "../defenses/genref.yaml"
+    ],
+    "overrides": {
+      "dataset": {
+        "sampling": {
+          "num_samples": 1000,
+          "strategy": "stratified"
+        }
+      },
+      "attack": {
+        "attack_params": {
+          "num_steps": 500,
+          "early_stop": true,
+          "success_threshold": 0.95
+        },
+        "batch": {
+          "size": 16
+        }
+      },
+      "defense": {
+        "text_variants": {
+          "generation": {
+            "num_variants": 6
+          }
+        },
+        "generative_reference": {
+          "generation": {
+            "num_images_per_text": 2,
+            "batch_size": 8
+          }
+        },
+        "detector": {
+          "weights": {
+            "direct_consistency": 0.25,
+            "text_variant_consistency": 0.35,
+            "generative_reference_consistency": 0.4
+          }
+        }
+      }
+    },
+    "workflow": {
+      "stages": [
+        "data_preparation",
+        "attack_generation",
+        "defense_evaluation",
+        "results_analysis"
+      ],
+      "data_preparation": {
+        "validate_dataset": true,
+        "precompute_features": true,
+        "build_indices": true
+      },
+      "attack_generation": {
+        "generate_clean_baseline": true,
+        "generate_adversarial": true,
+        "validate_attacks": true
+      },
+      "defense_evaluation": {
+        "test_clean_samples": true,
+        "test_adversarial_samples": true,
+        "cross_validation": false
+      },
+      "results_analysis": {
+        "generate_metrics": true,
+        "generate_plots": true,
+        "generate_tables": true,
+        "statistical_tests": true
+      }
+    },
+    "output": {
+      "base_dir": "./experiments/results/coco_pgd_full",
+      "save": {
+        "raw_predictions": true,
+        "processed_metrics": true,
+        "intermediate_results": false,
+        "model_checkpoints": false
+      },
+      "visualization": {
+        "roc_curves": true,
+        "pr_curves": true,
+        "confusion_matrices": true,
+        "similarity_distributions": true,
+        "tsne_plots": true
+      },
+      "reports": {
+        "summary_table": true,
+        "detailed_analysis": true,
+        "latex_tables": true,
+        "markdown_report": true
+      }
+    },
+    "resources": {
+      "compute": {
+        "max_gpu_memory": "90%",
+        "max_cpu_cores": 16,
+        "max_ram": "64GB"
+      },
+      "storage": {
+        "max_disk_usage": "100GB",
+        "temp_dir": "./experiments/temp",
+        "cleanup_temp": true
+      },
+      "time_limits": {
+        "max_experiment_time": "24h",
+        "max_stage_time": "6h",
+        "checkpoint_interval": "1h"
+      }
+    },
+    "parallel": {
+      "data_parallel": {
+        "enabled": true,
+        "num_workers": 8
+      },
+      "model_parallel": {
+        "enabled": true,
+        "strategy": "pipeline"
+      },
+      "experiment_parallel": {
+        "enabled": false,
+        "max_concurrent": 1
+      }
+    },
+    "monitoring": {
+      "performance": {
+        "gpu_utilization": true,
+        "memory_usage": true,
+        "cpu_usage": true,
+        "disk_io": true
+      },
+      "experiment": {
+        "progress_tracking": true,
+        "intermediate_metrics": true,
+        "error_detection": true
+      },
+      "alerts": {
+        "memory_threshold": 0.9,
+        "time_threshold": 0.8,
+        "error_threshold": 0.1
+      }
+    },
+    "fault_tolerance": {
+      "retry": {
+        "max_retries": 3,
+        "backoff_factor": 2.0
+      },
+      "checkpointing": {
+        "enabled": true,
+        "frequency": "1h",
+        "auto_resume": true
+      },
+      "error_handling": {
+        "continue_on_error": false,
+        "log_errors": true,
+        "save_error_state": true
+      }
+    },
+    "reproducibility": {
+      "seed": 42,
+      "deterministic": true,
+      "benchmark": false,
+      "environment": {
+        "record_packages": true,
+        "record_hardware": true,
+        "record_git_info": true
+      }
+    },
+    "debug": {
+      "enabled": false,
+      "verbose_logging": false,
+      "save_intermediate": false,
+      "profile_performance": false,
+      "memory_profiling": false
+    }
+  }
+}

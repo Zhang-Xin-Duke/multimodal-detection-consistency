@@ -1,0 +1,187 @@
+# 文本变体一致性防御配置 (Text-Variant Consistency)
+name: "tvc_defense"
+type: "consistency_based"
+description: "Defense using text variant consistency analysis"
+
+# 防御策略
+strategy:
+  type: "text_variant_consistency"
+  components:
+    - "image_text_similarity"
+    - "text_variant_consistency"
+  
+# 一致性检测配置
+consistency:
+  # 直接一致性
+  direct:
+    enabled: true
+    similarity_metric: "cosine"
+    threshold: 0.5
+    normalize_features: true
+    weight: 0.4
+    
+  # 文本变体一致性
+  text_variant:
+    enabled: true
+    similarity_metric: "cosine"
+    threshold: 0.85
+    normalize_features: true
+    weight: 0.6
+    
+    # 变体生成配置
+    generation:
+      num_variants: 10
+      max_retries: 3
+      diversity_penalty: 0.1
+      quality_threshold: 0.8
+      
+    # 聚合策略
+    aggregation: "mean"  # mean, max, min, median, weighted
+    
+  # 生成参考一致性（禁用）
+  generative_reference:
+    enabled: false
+
+# 文本增强配置
+text_augment:
+  # 同义词替换
+  synonym_replacement:
+    enabled: true
+    ratio: 0.1
+    preserve_pos: true
+    
+  # 释义生成
+  paraphrase:
+    enabled: true
+    model: "qwen"
+    temperature: 0.7
+    max_length: 512
+    num_beams: 3
+    
+  # 句法变换
+  syntax_transform:
+    enabled: true
+    ratio: 0.15
+    preserve_meaning: true
+    
+  # 回译
+  back_translation:
+    enabled: false  # 计算开销大，默认关闭
+    intermediate_lang: "fr"
+    
+  # 质量控制
+  quality_control:
+    similarity_threshold: 0.85
+    semantic_threshold: 0.9
+    fluency_threshold: 0.8
+
+# 检测器配置
+detector:
+  type: "ensemble"
+  aggregation: "weighted_mean"
+  confidence_threshold: 0.8
+  
+  # 阈值配置
+  thresholds:
+    direct_similarity: 0.5
+    variant_consistency: 0.85
+    overall_confidence: 0.8
+    
+  # 权重配置
+  weights:
+    direct_consistency: 0.4
+    text_variant_consistency: 0.6
+    
+  # 决策规则
+  decision_rule: "weighted_ensemble"
+
+# 模型配置
+models:
+  clip:
+    model_name: "ViT-B/32"
+    device: "cuda"
+    batch_size: 256
+    precision: "fp16"
+    cache_dir: "./data/cache/models/clip"
+    
+  qwen:
+    model_name: "Qwen/Qwen2-1.5B-Instruct"
+    device: "cuda"
+    max_length: 512
+    temperature: 0.7
+    precision: "fp16"
+    cache_dir: "./data/cache/models/qwen"
+
+# 特征提取配置
+feature_extraction:
+  image:
+    normalize: true
+    pooling: "cls"
+    
+  text:
+    normalize: true
+    max_length: 77
+    truncation: true
+    
+  # 变体特征聚合
+  variant_aggregation:
+    method: "mean"  # mean, max, attention_weighted
+    attention_heads: 8
+
+# 批处理配置
+batch:
+  size: 32
+  variant_batch_size: 16  # 变体处理批大小
+  accumulation: false
+  
+# 多GPU配置
+multi_gpu:
+  enabled: true
+  gpu_ids: [0, 1, 2, 3, 4, 5]
+  batch_size_per_gpu: 8
+  model_parallel: false
+  
+# 评估配置
+evaluation:
+  metrics: ["accuracy", "precision", "recall", "f1_score", "auc_roc", "auc_pr"]
+  cross_validation: false
+  test_time_augmentation: true
+  variant_analysis: true
+  
+# 输出配置
+output:
+  save_predictions: true
+  save_features: false
+  save_similarities: true
+  save_variants: true
+  detailed_logs: true
+  
+# 性能配置
+performance:
+  precision: "fp16"
+  enable_amp: true
+  gradient_checkpointing: false
+  memory_efficient: true
+  parallel_variant_processing: true
+  
+# 缓存配置
+cache:
+  enabled: true
+  features: true
+  similarities: true
+  variants: true
+  predictions: false
+  
+# 实验配置
+experiment:
+  seed: 42
+  reproducible: true
+  num_runs: 1
+  ablation_studies: false
+  
+# 调试配置
+debug:
+  verbose: false
+  save_intermediate: false
+  profile_performance: false
+  analyze_variants: false

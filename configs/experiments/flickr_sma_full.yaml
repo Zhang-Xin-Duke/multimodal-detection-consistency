@@ -1,0 +1,73 @@
+# Flickr30K + SMA + 完整防御实验配置
+name: "flickr_sma_full_experiment"
+description: "Complete experiment: Flickr30K dataset + SMA attack + full defense (TVC + GenRef)"
+version: "1.0"
+
+# 继承基础配置
+inherits:
+  - "../default.yaml"
+  - "../datasets/flickr30k.yaml"
+  - "../attacks/sma.yaml"
+  - "../defenses/base.yaml"
+
+# 实验特定覆盖配置
+overrides:
+  # 数据集配置覆盖
+  dataset:
+    loading:
+      batch_size: 32  # 适合攻击实验的batch size
+    splits:
+      test:
+        size: 1000  # 使用子集进行实验
+      
+  # 攻击配置覆盖
+  attack:
+    parameters:
+      num_iter: 15  # SMA推荐迭代次数
+      epsilon: 0.031  # 8/255
+      alpha: 0.008   # 2/255
+      semantic_loss_weight: 2.0
+      alignment_loss_weight: 1.0
+      misalignment_strength: 0.8
+      cross_modal_weight: 1.5
+      
+  # 防御配置覆盖
+  defense:
+    text_variants:
+      enabled: true
+      num_variants: 5
+      strategies: ["synonym", "paraphrase", "reorder"]
+    generative_reference:
+      enabled: true
+      num_references: 3
+    detector:
+      weights:
+        direct_consistency: 0.25
+        text_variant_consistency: 0.35
+        generative_reference_consistency: 0.4
+
+# 实验流程配置
+workflow:
+  stages:
+    - "data_preparation"
+    - "attack_generation"
+    - "defense_evaluation"
+    - "metrics_calculation"
+    - "visualization"
+
+# 评估指标
+metrics:
+  - "attack_success_rate"
+  - "defense_success_rate"
+  - "top_k_retrieval_accuracy"
+  - "detection_rate"
+  - "false_positive_rate"
+  - "computational_overhead"
+
+# 输出配置
+output:
+  save_adversarial_samples: true
+  save_detection_results: true
+  save_metrics: true
+  generate_visualizations: true
+  results_dir: "results/flickr_sma_full"

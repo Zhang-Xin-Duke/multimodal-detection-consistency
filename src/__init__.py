@@ -13,6 +13,9 @@ __version__ = "1.0.0"
 __author__ = "Research Team"
 __email__ = "research@example.com"
 
+# 导入配置管理
+from .config import Config, GlobalConfig
+
 # 导入主要模块
 from . import text_augment
 from . import retrieval
@@ -23,41 +26,43 @@ from . import pipeline
 
 # 导入子包
 from . import attacks
-from . import models
 from . import utils
 from . import evaluation
 
-# 导入主要类
-from .text_augment import TextAugmenter, TextAugmentConfig
-from .retrieval import MultiModalRetriever, RetrievalConfig
-from .sd_ref import SDReferenceGenerator, SDReferenceConfig
-from .ref_bank import ReferenceBank, ReferenceBankConfig
-from .detector import AdversarialDetector, DetectorConfig
-from .pipeline import MultiModalDetectionPipeline, PipelineConfig
+# 导入主要类（这些类需要在相应模块中实现）
+# from .text_augment import TextAugmenter, TextAugmentConfig
+# from .retrieval import MultiModalRetriever, RetrievalConfig
+# from .sd_ref import SDReferenceGenerator, SDReferenceConfig
+# from .ref_bank import ReferenceBank, ReferenceBankConfig
+# from .detector import AdversarialDetector, DetectorConfig
+# from .pipeline import MultiModalDetectionPipeline, PipelineConfig
 
-# 导入工厂函数
-from .text_augment import create_text_augmenter
-from .retrieval import create_retriever
-from .sd_ref import create_sd_reference_generator
-from .ref_bank import create_reference_bank
-from .detector import create_adversarial_detector
-from .pipeline import create_detection_pipeline
+# 模型相关导入（需要时再添加）
+# from .models import CLIPModel, CLIPConfig
+# from .models import QwenModel, QwenConfig
+# from .models import StableDiffusionModel, StableDiffusionConfig
 
-# 导入模型
-from .models import CLIPModel, CLIPConfig
-from .models import create_clip_model
+# 攻击模块导入（需要时再添加）
+# from .attacks import PGDAttacker, HubnessAttacker, TextAttacker, FGSMAttacker
 
-# 导入攻击模块
-from .attacks import HubnessAttacker, HubnessAttackConfig
-from .attacks import create_hubness_attacker
+# 导入数据集加载器（需要时再添加）
+# from .datasets import COCOLoader, FlickrLoader, CCLoader, VGLoader
 
-# 导入评估模块
-from .evaluation import DataValidator, ExperimentEvaluator
-from .evaluation import create_data_validator, create_experiment_evaluator
+# 评估模块导入（需要时再添加）
+# from .evaluation import DataValidator, ExperimentEvaluator
 
-# 导入工具
-from .utils import load_config, save_config
-from .utils import create_metrics_calculator, create_experiment_visualizer
+# 工具模块导入（需要时再添加）
+# from .utils import (
+#     ConfigManager,
+#     HardwareDetector,
+#     MultiGPUProcessor,
+#     CUDADeviceManager,
+#     SimilarityCalculator,
+#     DetectionEvaluator,
+#     RetrievalEvaluator,
+#     MetricsAggregator,
+#     VisualizationManager
+# )
 
 __all__ = [
     # 版本信息
@@ -65,45 +70,9 @@ __all__ = [
     "__author__",
     "__email__",
     
-    # 主要配置类
-    "TextAugmentConfig",
-    "RetrievalConfig", 
-    "SDReferenceConfig",
-    "ReferenceBankConfig",
-    "DetectorConfig",
-    "PipelineConfig",
-    "CLIPConfig",
-    "HubnessAttackConfig",
-    
-    # 主要功能类
-    "TextAugmenter",
-    "MultiModalRetriever",
-    "SDReferenceGenerator",
-    "ReferenceBank",
-    "AdversarialDetector",
-    "MultiModalDetectionPipeline",
-    "CLIPModel",
-    "HubnessAttacker",
-    "DataValidator",
-    "ExperimentEvaluator",
-    
-    # 工厂函数
-    "create_text_augmenter",
-    "create_retriever",
-    "create_sd_reference_generator",
-    "create_reference_bank",
-    "create_adversarial_detector",
-    "create_detection_pipeline",
-    "create_clip_model",
-    "create_hubness_attacker",
-    "create_data_validator",
-    "create_experiment_evaluator",
-    
-    # 工具函数
-    "load_config",
-    "save_config",
-    "create_metrics_calculator",
-    "create_experiment_visualizer",
+    # 配置管理
+    "Config",
+    "GlobalConfig",
     
     # 子模块
     "text_augment",
@@ -113,7 +82,6 @@ __all__ = [
     "detector",
     "pipeline",
     "attacks",
-    "models",
     "utils",
     "evaluation"
 ]
@@ -145,12 +113,26 @@ SUPPORTED_SD_MODELS = [
     "stabilityai/stable-diffusion-xl-base-1.0"
 ]
 
+SUPPORTED_QWEN_MODELS = [
+    "Qwen/Qwen2-7B-Instruct",
+    "Qwen/Qwen2-1.5B-Instruct",
+    "Qwen/Qwen2-0.5B-Instruct"
+]
+
 # 支持的数据集
 SUPPORTED_DATASETS = [
     "coco",
     "flickr30k",
     "conceptual_captions",
     "visual_genome"
+]
+
+# 支持的攻击方法
+SUPPORTED_ATTACKS = [
+    "pgd",
+    "hubness",
+    "fsta",
+    "sma"
 ]
 
 def get_version():
@@ -161,12 +143,17 @@ def get_supported_models():
     """获取支持的模型列表"""
     return {
         "clip": SUPPORTED_CLIP_MODELS,
-        "stable_diffusion": SUPPORTED_SD_MODELS
+        "stable_diffusion": SUPPORTED_SD_MODELS,
+        "qwen": SUPPORTED_QWEN_MODELS
     }
 
 def get_supported_datasets():
     """获取支持的数据集列表"""
     return SUPPORTED_DATASETS
+
+def get_supported_attacks():
+    """获取支持的攻击方法列表"""
+    return SUPPORTED_ATTACKS
 
 def get_default_config():
     """获取默认配置"""

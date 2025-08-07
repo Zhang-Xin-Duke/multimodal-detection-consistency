@@ -1,14 +1,25 @@
 """Hubness攻击模块
 
-实现基于hubness的对抗性攻击方法。
+基于《Adversarial Hubness in Multi-Modal Retrieval》论文的复现实现。
+论文作者: Tingwei Zhang, Fnu Suya, Rishi Jha, Collin Zhang, Vitaly Shmatikov
+论文链接: https://arxiv.org/pdf/2412.14113
+GitHub: https://github.com/Tingwei-Zhang/adv_hub
+
+核心思想:
+1. 利用高维向量空间中的hubness现象
+2. 将任意图像转化为对抗性hub
+3. 使单个对抗样本能够被大量不同查询检索到
 """
 
 import torch
+import torch.nn as nn
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Union, Any, Callable
 from dataclasses import dataclass
 import logging
+import time
 from pathlib import Path
+from tqdm import tqdm
 import json
 import time
 from PIL import Image
@@ -16,879 +27,827 @@ import torch.nn.functional as F
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics.pairwise import cosine_similarity
 import random
-from ..models import CLIPModel, CLIPConfig
+import hashlib
+from ..models.clip_model import CLIPModel, CLIPConfig
 from ..utils.metrics import SimilarityMetrics
 import warnings
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class HubnessAttackConfig:
-    """Hubness攻击配置"""
+    """Hubness攻击配置 - 基于原论文《Adversarial Hubness in Multi-Modal Retrieval》"""
     # 模型配置
     clip_model: str = "openai/clip-vit-base-patch32"
     device: str = "cuda"
     
-    # 攻击参数
-    epsilon: float = 0.1  # 扰动强度
-    num_iterations: int = 100  # 迭代次数
-    step_size: float = 0.01  # 步长
+    # 核心攻击参数 (基于原论文)
+    epsilon: float = 16.0 / 255.0  # L∞扰动强度，论文标准设置
+    num_iterations: int = 500  # 优化迭代次数
+    step_size: float = 0.02  # 梯度步长
     
-    # Hubness参数
-    k_neighbors: int = 10  # 近邻数量
-    hubness_threshold: float = 0.8  # Hubness阈值
-    target_hubness: float = 0.9  # 目标hubness值
+    # Hubness核心参数
+    k_neighbors: int = 10  # k-近邻数量，用于hubness计算
+    num_target_queries: int = 100  # 目标查询数量，论文中使用100个随机查询
+    hubness_weight: float = 1.0  # hubness损失权重
+    success_threshold: float = 0.84  # 攻击成功阈值，论文中21000/25000=0.84
     
     # 优化参数
-    learning_rate: float = 0.001
-    momentum: float = 0.9
-    weight_decay: float = 1e-4
+    learning_rate: float = 0.02  # 学习率
+    momentum: float = 0.9  # 动量
+    weight_decay: float = 1e-4  # 权重衰减
+    
+    # 攻击模式
+    attack_mode: str = "universal"  # universal: 通用攻击, targeted: 针对性攻击
+    target_concepts: List[str] = None  # 针对性攻击的目标概念
     
     # 约束参数
-    norm_constraint: str = "l2"  # l1, l2, linf
-    clamp_min: float = 0.0
-    clamp_max: float = 1.0
+    norm_constraint: str = "linf"  # L∞范数约束
+    clamp_min: float = 0.0  # 图像像素最小值
+    clamp_max: float = 1.0  # 图像像素最大值
     
-    # 目标设置
-    attack_mode: str = "targeted"  # targeted, untargeted
-    target_similarity: float = 0.9  # 目标相似性
+    # 随机化参数
+    random_start: bool = True  # 随机初始化扰动
+    random_seed: int = 42  # 随机种子
     
-    # 搜索参数
-    random_start: bool = True
-    num_restarts: int = 1
-    early_stopping: bool = True
-    patience: int = 10
+    # 批处理和多GPU优化配置
+    enable_multi_gpu: bool = True  # 启用多GPU并行
+    gpu_ids: List[int] = None  # GPU ID列表，None表示使用所有可用GPU
+    batch_size: int = 64  # 总批次大小
+    batch_size_per_gpu: int = 16  # 每个GPU的批次大小
+    num_workers: int = 4  # 数据加载器工作进程数
     
-    # 评估参数
-    success_threshold: float = 0.8
-    consistency_weight: float = 0.5
+    # 内存优化
+    gradient_accumulation_steps: int = 1  # 梯度累积步数
+    mixed_precision: bool = True  # 混合精度训练
+    pin_memory: bool = True  # 固定内存
     
     # 缓存配置
-    enable_cache: bool = True
-    cache_size: int = 1000
+    enable_cache: bool = True  # 启用结果缓存
+    cache_size: int = 1000  # 缓存大小
+    
+    # 数据集配置
+    dataset_size: int = 25000  # 测试数据集大小（论文中使用25K）
+    query_pool_size: int = 1000  # 查询池大小
+    
+    def __post_init__(self):
+        """初始化后处理"""
+        if self.target_concepts is None:
+            self.target_concepts = []
+    
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'HubnessAttackConfig':
+        """从字典创建配置"""
+        hubness_config = config_dict.get('attacks', {}).get('hubness', {})
+        
+        return cls(
+            clip_model=hubness_config.get('clip_model', "openai/clip-vit-base-patch32"),
+            epsilon=hubness_config.get('epsilon', 16.0 / 255.0),
+            num_iterations=hubness_config.get('num_iterations', 500),
+            step_size=hubness_config.get('step_size', 0.02),
+            k_neighbors=hubness_config.get('k_neighbors', 10),
+            num_target_queries=hubness_config.get('num_target_queries', 100),
+            hubness_weight=hubness_config.get('hubness_weight', 1.0),
+            success_threshold=hubness_config.get('success_threshold', 0.84),
+            learning_rate=hubness_config.get('learning_rate', 0.02),
+            momentum=hubness_config.get('momentum', 0.9),
+            weight_decay=hubness_config.get('weight_decay', 1e-4),
+            attack_mode=hubness_config.get('attack_mode', "universal"),
+            target_concepts=hubness_config.get('target_concepts', []),
+            norm_constraint=hubness_config.get('norm_constraint', "linf"),
+            clamp_min=hubness_config.get('clamp_min', 0.0),
+            clamp_max=hubness_config.get('clamp_max', 1.0),
+            random_start=hubness_config.get('random_start', True),
+            random_seed=hubness_config.get('random_seed', 42),
+            enable_cache=hubness_config.get('enable_cache', True),
+            cache_size=hubness_config.get('cache_size', 1000),
+            dataset_size=hubness_config.get('dataset_size', 25000),
+            query_pool_size=hubness_config.get('query_pool_size', 1000)
+        )
 
 
-class HubnessAttacker:
-    """Hubness攻击器"""
+class HubnessAttack:
+    """Hubness攻击实现 - 基于原论文《Adversarial Hubness in Multi-Modal Retrieval》
+    
+    该攻击利用高维向量空间中的hubness现象，将任意图像转化为对抗性hub，
+    使其能够被大量不同的文本查询检索到。
+    """
     
     def __init__(self, config: HubnessAttackConfig):
-        """
-        初始化Hubness攻击器
+        """初始化Hubness攻击器
         
         Args:
             config: 攻击配置
         """
         self.config = config
         
+        # 设置设备和多GPU
+        self._setup_devices()
+        
         # 初始化CLIP模型
-        self.clip_model = self._initialize_clip_model()
+        self.clip_model = None
+        self._initialize_clip_model()
         
-        # 相似性计算器
-        self.similarity_metrics = SimilarityMetrics()
-        
-        # 近邻搜索器
-        self.nn_searcher = None
-        
-        # 缓存
-        self.attack_cache = {}
-        self.hubness_cache = {}
-        
-        # 统计信息
+        # 攻击统计
         self.attack_stats = {
             'total_attacks': 0,
             'successful_attacks': 0,
-            'failed_attacks': 0,
-            'total_time': 0.0,
-            'cache_hits': 0
+            'average_iterations': 0,
+            'average_hubness_score': 0.0,
+            'average_attack_time': 0.0
         }
         
-        logger.info("Hubness攻击器初始化完成")
-    
-    def _initialize_clip_model(self) -> CLIPModel:
-        """
-        初始化CLIP模型
+        # 缓存
+        self.cache = {} if config.enable_cache else None
         
-        Returns:
-            CLIP模型实例
-        """
-        try:
-            clip_config = CLIPConfig(
-                model_name=self.config.clip_model,
-                device=self.config.device
-            )
-            
-            clip_model = CLIPModel(clip_config)
-            logger.info(f"CLIP模型初始化完成: {self.config.clip_model}")
-            
-            return clip_model
-            
-        except Exception as e:
-            logger.error(f"CLIP模型初始化失败: {e}")
-            raise
-    
-    def build_reference_database(self, images: List[Image.Image], 
-                                texts: List[str]):
-        """
-        构建参考数据库
+        # 设置随机种子
+        self._set_random_seed(config.random_seed)
         
-        Args:
-            images: 参考图像列表
-            texts: 参考文本列表
-        """
-        try:
-            logger.info(f"构建参考数据库: {len(images)} 张图像, {len(texts)} 个文本")
-            
-            # 编码图像和文本
-            image_features = []
-            text_features = []
-            
-            for image in images:
-                features = self.clip_model.encode_image(image)
-                image_features.append(features)
-            
-            for text in texts:
-                features = self.clip_model.encode_text(text)
-                text_features.append(features)
-            
-            self.image_features = np.array(image_features)
-            self.text_features = np.array(text_features)
-            
-            # 构建近邻搜索器
-            all_features = np.vstack([self.image_features, self.text_features])
-            self.nn_searcher = NearestNeighbors(
-                n_neighbors=self.config.k_neighbors + 1,
-                metric='cosine'
-            )
-            self.nn_searcher.fit(all_features)
-            
-            logger.info("参考数据库构建完成")
-            
-        except Exception as e:
-            logger.error(f"构建参考数据库失败: {e}")
-            raise
-    
-    def compute_hubness(self, features: np.ndarray) -> float:
-        """
-        计算hubness值
+        # 参考数据库
+        self.text_features = None
+        self.image_features = None
         
-        Args:
-            features: 特征向量
-            
-        Returns:
-            hubness值
-        """
-        try:
-            if self.nn_searcher is None:
-                raise ValueError("参考数据库未构建")
-            
-            # 查找最近邻
-            distances, indices = self.nn_searcher.kneighbors(
-                features.reshape(1, -1)
-            )
-            
-            # 计算hubness（被作为近邻的频率）
-            # 这里简化为与近邻的平均相似性
-            similarities = 1 - distances[0][1:]  # 排除自身
-            hubness = np.mean(similarities)
-            
-            return float(hubness)
-            
-        except Exception as e:
-            logger.error(f"计算hubness失败: {e}")
-            return 0.0
+        logger.info(f"Hubness攻击器初始化完成，设备: {self.device}")
+        logger.info(f"多GPU配置: 启用={config.enable_multi_gpu}, GPU数量={len(self.device_ids)}")
+        logger.info(f"批处理配置: 总批次大小={config.batch_size}, 每GPU批次大小={config.batch_size_per_gpu}")
     
-    def create_adversarial_hub(self, image: Union[Image.Image, torch.Tensor], 
-                              text: str, 
-                              target_text: Optional[str] = None) -> Dict[str, Any]:
-        """
-        创建对抗性hub
-        
-        Args:
-            image: 输入图像
-            text: 输入文本
-            target_text: 目标文本（用于targeted攻击）
-            
-        Returns:
-            攻击结果字典
-        """
-        try:
-            start_time = time.time()
-            
-            # 检查缓存
-            cache_key = self._get_cache_key(image, text, target_text)
-            if self.config.enable_cache and cache_key in self.attack_cache:
-                self.attack_stats['cache_hits'] += 1
-                return self.attack_cache[cache_key]
-            
-            # 转换输入
-            if isinstance(image, Image.Image):
-                image_tensor = self.clip_model.preprocess(image).unsqueeze(0)
+    def _setup_devices(self):
+        """设置设备和多GPU配置"""
+        if self.config.enable_multi_gpu and torch.cuda.device_count() > 1:
+            if self.config.gpu_ids is None:
+                self.device_ids = list(range(torch.cuda.device_count()))
             else:
-                image_tensor = image
+                self.device_ids = self.config.gpu_ids
             
-            image_tensor = image_tensor.to(self.config.device)
-            image_tensor.requires_grad_(True)
-            
-            # 编码原始文本
-            original_text_features = self.clip_model.encode_text(text)
-            
-            # 编码目标文本（如果有）
-            target_text_features = None
-            if target_text:
-                target_text_features = self.clip_model.encode_text(target_text)
-            
-            # 执行攻击
-            best_result = None
-            best_success = False
-            
-            for restart in range(self.config.num_restarts):
-                result = self._single_attack_iteration(
-                    image_tensor.clone(),
-                    original_text_features,
-                    target_text_features,
-                    text
-                )
-                
-                if result['success'] and (not best_success or 
-                    result['hubness'] > best_result['hubness']):
-                    best_result = result
-                    best_success = True
-                elif not best_success:
-                    best_result = result
-            
-            # 构建最终结果
-            final_result = {
-                'success': best_result['success'],
-                'adversarial_image': best_result['adversarial_image'],
-                'original_image': image,
-                'perturbation': best_result['perturbation'],
-                'hubness': best_result['hubness'],
-                'similarity_change': best_result['similarity_change'],
-                'iterations': best_result['iterations'],
-                'attack_time': time.time() - start_time,
-                'config': self.config.__dict__
-            }
-            
-            # 缓存结果
-            if self.config.enable_cache:
-                if len(self.attack_cache) >= self.config.cache_size:
-                    # 清理最旧的缓存项
-                    oldest_key = next(iter(self.attack_cache))
-                    del self.attack_cache[oldest_key]
-                
-                self.attack_cache[cache_key] = final_result
-            
-            # 更新统计信息
-            self.attack_stats['total_attacks'] += 1
-            if final_result['success']:
-                self.attack_stats['successful_attacks'] += 1
-            else:
-                self.attack_stats['failed_attacks'] += 1
-            self.attack_stats['total_time'] += final_result['attack_time']
-            
-            logger.debug(f"Hubness攻击完成: {'成功' if final_result['success'] else '失败'} "
-                        f"(hubness: {final_result['hubness']:.3f})")
-            
-            return final_result
-            
-        except Exception as e:
-            logger.error(f"创建对抗性hub失败: {e}")
-            return {
-                'success': False,
-                'adversarial_image': image,
-                'original_image': image,
-                'perturbation': None,
-                'hubness': 0.0,
-                'similarity_change': 0.0,
-                'iterations': 0,
-                'attack_time': 0.0,
-                'error': str(e)
-            }
-    
-    def _single_attack_iteration(self, image_tensor: torch.Tensor, 
-                                original_text_features: np.ndarray,
-                                target_text_features: Optional[np.ndarray],
-                                text: str) -> Dict[str, Any]:
-        """
-        单次攻击迭代
-        
-        Args:
-            image_tensor: 图像张量
-            original_text_features: 原始文本特征
-            target_text_features: 目标文本特征
-            text: 原始文本
-            
-        Returns:
-            攻击结果
-        """
-        try:
-            # 确保image_tensor是叶子节点并需要梯度
-            image_tensor = image_tensor.clone().detach().requires_grad_(True)
-            
-            # 随机初始化扰动
-            if self.config.random_start:
-                noise = torch.randn_like(image_tensor) * self.config.epsilon * 0.1
-                image_tensor = image_tensor + noise
-                image_tensor = torch.clamp(image_tensor, self.config.clamp_min, self.config.clamp_max)
-                # 重新设置为叶子节点
-                image_tensor = image_tensor.clone().detach().requires_grad_(True)
-            
-            original_image = image_tensor.clone().detach()
-            
-            # 优化器
-            optimizer = torch.optim.SGD(
-                [image_tensor], 
-                lr=self.config.learning_rate,
-                momentum=self.config.momentum,
-                weight_decay=self.config.weight_decay
-            )
-            
-            best_hubness = 0.0
-            best_image = image_tensor.clone()
-            patience_counter = 0
-            
-            for iteration in range(self.config.num_iterations):
-                optimizer.zero_grad()
-                
-                # 编码当前图像
-                current_image_features = self.clip_model.encode_image_tensor(image_tensor)
-                
-                # 计算hubness损失
-                hubness_loss = self._compute_hubness_loss(current_image_features)
-                
-                # 计算相似性损失
-                similarity_loss = self._compute_similarity_loss(
-                    current_image_features,
-                    original_text_features,
-                    target_text_features
-                )
-                
-                # 总损失
-                total_loss = hubness_loss + self.config.consistency_weight * similarity_loss
-                
-                # 反向传播
-                total_loss.backward()
-                optimizer.step()
-                
-                # 应用约束
-                with torch.no_grad():
-                    # 扰动约束
-                    perturbation = image_tensor - original_image
-                    perturbation = self._apply_norm_constraint(perturbation)
-                    image_tensor.data = original_image + perturbation
-                    
-                    # 像素值约束
-                    image_tensor.data = torch.clamp(
-                        image_tensor.data, 
-                        self.config.clamp_min, 
-                        self.config.clamp_max
-                    )
-                
-                # 评估当前结果
-                current_hubness = self.compute_hubness(
-                    current_image_features.detach().cpu().numpy()
-                )
-                
-                if current_hubness > best_hubness:
-                    best_hubness = current_hubness
-                    best_image = image_tensor.clone()
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                
-                # 早停
-                if (self.config.early_stopping and 
-                    patience_counter >= self.config.patience):
-                    break
-                
-                # 成功条件检查
-                if current_hubness >= self.config.target_hubness:
-                    break
-            
-            # 计算最终结果
-            final_perturbation = best_image - original_image
-            final_hubness = self.compute_hubness(
-                self.clip_model.encode_image_tensor(best_image).detach().cpu().numpy()
-            )
-            
-            # 计算相似性变化
-            original_similarity = self.clip_model.compute_similarity(
-                text, 
-                self._tensor_to_image(original_image)
-            )
-            adversarial_similarity = self.clip_model.compute_similarity(
-                text, 
-                self._tensor_to_image(best_image)
-            )
-            similarity_change = adversarial_similarity - original_similarity
-            
-            success = final_hubness >= self.config.hubness_threshold
-            
-            return {
-                'success': success,
-                'adversarial_image': self._tensor_to_image(best_image),
-                'perturbation': final_perturbation.detach().cpu().numpy(),
-                'hubness': final_hubness,
-                'similarity_change': similarity_change,
-                'iterations': iteration + 1
-            }
-            
-        except Exception as e:
-            logger.error(f"攻击迭代失败: {e}")
-            return {
-                'success': False,
-                'adversarial_image': self._tensor_to_image(image_tensor),
-                'perturbation': None,
-                'hubness': 0.0,
-                'similarity_change': 0.0,
-                'iterations': 0
-            }
-    
-    def _compute_hubness_loss(self, image_features: torch.Tensor) -> torch.Tensor:
-        """
-        计算hubness损失
-        
-        Args:
-            image_features: 图像特征
-            
-        Returns:
-            hubness损失
-        """
-        try:
-            # 简化的hubness损失：最大化与参考特征的相似性
-            if hasattr(self, 'image_features') and hasattr(self, 'text_features'):
-                ref_features = torch.tensor(
-                    np.vstack([self.image_features, self.text_features]),
-                    device=image_features.device,
-                    dtype=image_features.dtype
-                )
-                
-                # 计算相似性
-                similarities = F.cosine_similarity(
-                    image_features.unsqueeze(0), 
-                    ref_features, 
-                    dim=1
-                )
-                
-                # hubness损失：负的平均相似性（最大化相似性）
-                hubness_loss = -similarities.mean()
-            else:
-                # 如果没有参考数据库，使用简单的正则化
-                hubness_loss = -torch.norm(image_features)
-            
-            return hubness_loss
-            
-        except Exception as e:
-            logger.error(f"计算hubness损失失败: {e}")
-            return torch.tensor(0.0, device=image_features.device)
-    
-    def _compute_similarity_loss(self, image_features: torch.Tensor,
-                                original_text_features: np.ndarray,
-                                target_text_features: Optional[np.ndarray]) -> torch.Tensor:
-        """
-        计算相似性损失
-        
-        Args:
-            image_features: 图像特征
-            original_text_features: 原始文本特征
-            target_text_features: 目标文本特征
-            
-        Returns:
-            相似性损失
-        """
-        try:
-            original_text_tensor = torch.tensor(
-                original_text_features,
-                device=image_features.device,
-                dtype=image_features.dtype
-            )
-            
-            if self.config.attack_mode == "targeted" and target_text_features is not None:
-                # Targeted攻击：最大化与目标文本的相似性
-                target_text_tensor = torch.tensor(
-                    target_text_features,
-                    device=image_features.device,
-                    dtype=image_features.dtype
-                )
-                
-                target_similarity = F.cosine_similarity(
-                    image_features, target_text_tensor, dim=0
-                )
-                
-                similarity_loss = -target_similarity  # 最大化相似性
-            else:
-                # Untargeted攻击：最小化与原始文本的相似性
-                original_similarity = F.cosine_similarity(
-                    image_features, original_text_tensor, dim=0
-                )
-                
-                similarity_loss = original_similarity  # 最小化相似性
-            
-            return similarity_loss
-            
-        except Exception as e:
-            logger.error(f"计算相似性损失失败: {e}")
-            return torch.tensor(0.0, device=image_features.device)
-    
-    def _apply_norm_constraint(self, perturbation: torch.Tensor) -> torch.Tensor:
-        """
-        应用范数约束
-        
-        Args:
-            perturbation: 扰动张量
-            
-        Returns:
-            约束后的扰动
-        """
-        try:
-            if self.config.norm_constraint == "l2":
-                norm = torch.norm(perturbation)
-                if norm > self.config.epsilon:
-                    perturbation = perturbation * (self.config.epsilon / norm)
-            elif self.config.norm_constraint == "linf":
-                perturbation = torch.clamp(
-                    perturbation, 
-                    -self.config.epsilon, 
-                    self.config.epsilon
-                )
-            elif self.config.norm_constraint == "l1":
-                # L1约束的投影（简化版本）
-                flat_perturbation = perturbation.flatten()
-                l1_norm = torch.sum(torch.abs(flat_perturbation))
-                if l1_norm > self.config.epsilon:
-                    perturbation = perturbation * (self.config.epsilon / l1_norm)
-            
-            return perturbation
-            
-        except Exception as e:
-            logger.error(f"应用范数约束失败: {e}")
-            return perturbation
-    
-    def _tensor_to_image(self, tensor: torch.Tensor) -> Image.Image:
-        """
-        将张量转换为PIL图像
-        
-        Args:
-            tensor: 图像张量
-            
-        Returns:
-            PIL图像
-        """
-        try:
-            # 假设tensor是[C, H, W]格式，值在[0, 1]范围内
-            tensor = tensor.detach().cpu()
-            
-            # 转换为numpy数组
-            if tensor.dim() == 4:  # [B, C, H, W]
-                tensor = tensor.squeeze(0)
-            
-            # 转换为[H, W, C]格式
-            if tensor.shape[0] == 3:  # [C, H, W]
-                tensor = tensor.permute(1, 2, 0)
-            
-            # 转换为0-255范围
-            array = (tensor.numpy() * 255).astype(np.uint8)
-            
-            # 创建PIL图像
-            image = Image.fromarray(array)
-            
-            return image
-            
-        except Exception as e:
-            logger.error(f"张量转图像失败: {e}")
-            # 返回空白图像
-            return Image.new('RGB', (224, 224), color='white')
-    
-    def _get_cache_key(self, image: Union[Image.Image, torch.Tensor], 
-                      text: str, target_text: Optional[str]) -> str:
-        """
-        生成缓存键
-        
-        Args:
-            image: 输入图像
-            text: 输入文本
-            target_text: 目标文本
-            
-        Returns:
-            缓存键
-        """
-        # 简化的缓存键生成
-        text_hash = hash(text)
-        target_hash = hash(target_text) if target_text else 0
-        
-        # 对于图像，使用简单的哈希
-        if isinstance(image, torch.Tensor):
-            image_hash = hash(image.cpu().numpy().tobytes())
+            self.device = torch.device(f'cuda:{self.device_ids[0]}')
         else:
-            image_array = np.array(image)
-            image_hash = hash(image_array.tobytes())
-        
-        config_hash = hash(str(self.config.__dict__))
-        
-        return f"{text_hash}_{target_hash}_{image_hash}_{config_hash}"
+            self.device_ids = [0] if torch.cuda.is_available() else []
+            self.device = torch.device(self.config.device if torch.cuda.is_available() else "cpu")
     
-    def evaluate_attack_success(self, original_image: Union[Image.Image, torch.Tensor],
-                               adversarial_image: Union[Image.Image, torch.Tensor],
-                               text: str) -> Dict[str, Any]:
-        """
-        评估攻击成功率
+    def build_reference_database(self, reference_images: List[Image.Image], reference_texts: List[str]):
+        """构建参考数据库
         
         Args:
-            original_image: 原始图像
-            adversarial_image: 对抗性图像
-            text: 文本
-            
-        Returns:
-            评估结果
+            reference_images: 参考图像列表
+            reference_texts: 参考文本列表
         """
-        try:
-            # 计算原始相似性
-            original_similarity = self.clip_model.compute_similarity(text, original_image)
-            
-            # 计算对抗性相似性
-            adversarial_similarity = self.clip_model.compute_similarity(text, adversarial_image)
-            
-            # 计算hubness
-            adversarial_features = self.clip_model.encode_image(adversarial_image)
-            hubness = self.compute_hubness(adversarial_features)
-            
-            # 计算扰动大小
-            if isinstance(original_image, Image.Image):
-                orig_array = np.array(original_image)
-            else:
-                orig_array = original_image.cpu().numpy()
-            
-            if isinstance(adversarial_image, Image.Image):
-                adv_array = np.array(adversarial_image)
-            else:
-                adv_array = adversarial_image.cpu().numpy()
-            
-            perturbation_l2 = np.linalg.norm(adv_array - orig_array)
-            perturbation_linf = np.max(np.abs(adv_array - orig_array))
-            
-            # 判断攻击成功
-            success = (
-                hubness >= self.config.success_threshold and
-                abs(adversarial_similarity - original_similarity) >= 0.1
-            )
-            
-            return {
-                'success': success,
-                'original_similarity': float(original_similarity),
-                'adversarial_similarity': float(adversarial_similarity),
-                'similarity_change': float(adversarial_similarity - original_similarity),
-                'hubness': float(hubness),
-                'perturbation_l2': float(perturbation_l2),
-                'perturbation_linf': float(perturbation_linf)
-            }
-            
-        except Exception as e:
-            logger.error(f"评估攻击成功率失败: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
-    
-    def attack_single(self, image: Union[Image.Image, torch.Tensor], 
-                         text: str, 
-                         target_text: Optional[str] = None) -> Dict[str, Any]:
-        """
-        单个样本攻击（create_adversarial_hub的别名）
+        logger.info(f"开始构建参考数据库，包含 {len(reference_images)} 个图像和 {len(reference_texts)} 个文本")
         
-        Args:
-            image: 输入图像
-            text: 输入文本
-            target_text: 目标文本（用于targeted攻击）
-            
-        Returns:
-            攻击结果字典
-        """
-        return self.create_adversarial_hub(image, text, target_text)
+        # 编码参考图像
+        self.image_features = self.clip_model.encode_image(reference_images)
+        
+        # 编码参考文本
+        self.text_features = self.clip_model.encode_text(reference_texts)
+        
+        logger.info(f"参考数据库构建完成，图像特征: {self.image_features.shape}, 文本特征: {self.text_features.shape}")
     
-    def batch_attack(self, images: List[Union[Image.Image, torch.Tensor]], 
-                    texts: List[str], 
-                    target_texts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """
-        批量攻击
+    def batch_attack(self, images: List[Union[torch.Tensor, Image.Image]], texts: List[str]) -> List[Dict[str, Any]]:
+        """真正的批量攻击实现
         
         Args:
             images: 图像列表
             texts: 文本列表
-            target_texts: 目标文本列表
             
         Returns:
             攻击结果列表
         """
+        logger.info(f"开始批量攻击 {len(images)} 个样本")
+        start_time = time.time()
+        
+        # 预处理所有图像
+        image_tensors = []
+        for img in images:
+            if isinstance(img, Image.Image):
+                img_tensor = self.clip_model.preprocess(img)
+            else:
+                img_tensor = img
+            image_tensors.append(img_tensor)
+        
+        # 转换为批量张量
+        batch_images = torch.stack(image_tensors)
+        
+        # 分批处理以适应GPU内存
+        all_results = []
+        total_batches = (len(images) + self.config.batch_size - 1) // self.config.batch_size
+        
+        with tqdm(total=total_batches, desc="批量攻击进度") as pbar:
+            for batch_idx in range(0, len(images), self.config.batch_size):
+                batch_end = min(batch_idx + self.config.batch_size, len(images))
+                
+                batch_imgs = batch_images[batch_idx:batch_end].to(self.device)
+                batch_texts = texts[batch_idx:batch_end]
+                
+                # 执行批量攻击
+                batch_results = self._batch_attack_core(batch_imgs, batch_texts)
+                all_results.extend(batch_results)
+                
+                pbar.update(1)
+                pbar.set_postfix({
+                    'batch': f'{batch_idx//self.config.batch_size + 1}/{total_batches}',
+                    'success_rate': f'{sum(r["success"] for r in batch_results)/len(batch_results):.3f}'
+                })
+        
+        attack_time = time.time() - start_time
+        success_count = sum(1 for r in all_results if r['success'])
+        
+        # 更新统计信息
+        self.attack_stats['total_attacks'] += len(images)
+        if success_count > 0:
+            self.attack_stats['successful_attacks'] += success_count
+        self.attack_stats['average_attack_time'] = (
+            (self.attack_stats['average_attack_time'] * (self.attack_stats['total_attacks'] - len(images)) + attack_time) / 
+            self.attack_stats['total_attacks']
+        )
+        
+        logger.info(f"批量攻击完成，成功率: {success_count}/{len(images)} ({success_count/len(images):.3f})")
+        logger.info(f"总耗时: {attack_time:.2f}秒，平均每样本: {attack_time/len(images):.3f}秒")
+        
+        return all_results
+    
+    def _batch_attack_core(self, batch_images: torch.Tensor, batch_texts: List[str]) -> List[Dict[str, Any]]:
+        """批量攻击的核心实现
+        
+        Args:
+            batch_images: 批量图像张量 [batch_size, C, H, W]
+            batch_texts: 批量文本列表
+            
+        Returns:
+            批量攻击结果
+        """
+        batch_size = batch_images.size(0)
         results = []
         
-        for i, (image, text) in enumerate(zip(images, texts)):
-            target_text = target_texts[i] if target_texts else None
-            result = self.create_adversarial_hub(image, text, target_text)
-            results.append(result)
+        # 编码文本特征
+        with torch.no_grad():
+            text_features = self.clip_model.encode_text(batch_texts)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+        
+        # 为每个样本生成随机查询
+        batch_queries = []
+        for _ in range(batch_size):
+            queries = self._generate_random_queries(self.config.num_target_queries)
+            batch_queries.append(queries)
+        
+        # 编码所有查询
+        all_queries = [q for queries in batch_queries for q in queries]
+        with torch.no_grad():
+            query_features = self.clip_model.encode_text(all_queries)
+            query_features = query_features / query_features.norm(dim=-1, keepdim=True)
+        
+        # 重新组织查询特征
+        query_features_list = []
+        start_idx = 0
+        for queries in batch_queries:
+            end_idx = start_idx + len(queries)
+            query_features_list.append(query_features[start_idx:end_idx])
+            start_idx = end_idx
+        
+        # 初始化对抗样本
+        adv_images = batch_images.clone().detach().requires_grad_(True)
+        
+        # 优化器设置
+        if self.config.mixed_precision:
+            scaler = torch.cuda.amp.GradScaler()
+        
+        # 迭代攻击
+        for iteration in range(self.config.num_iterations):
+            if self.config.mixed_precision:
+                with torch.cuda.amp.autocast():
+                    # 编码图像特征
+                    image_features = self.clip_model.encode_image(adv_images)
+                    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                    
+                    # 计算hubness损失
+                    total_loss = 0
+                    for i in range(batch_size):
+                        img_feat = image_features[i:i+1]
+                        query_feat = query_features_list[i]
+                        
+                        # 计算相似度
+                        similarities = torch.mm(img_feat, query_feat.t())
+                        
+                        # Hubness损失：最大化平均相似度
+                        hubness_loss = -similarities.mean()
+                        total_loss += hubness_loss
+                    
+                    total_loss = total_loss / batch_size
+                
+                # 反向传播
+                scaler.scale(total_loss).backward()
+                scaler.step(lambda: None)  # 手动梯度更新
+                scaler.update()
+            else:
+                # 编码图像特征
+                image_features = self.clip_model.encode_image(adv_images)
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                
+                # 计算hubness损失
+                total_loss = 0
+                for i in range(batch_size):
+                    img_feat = image_features[i:i+1]
+                    query_feat = query_features_list[i]
+                    
+                    # 计算相似度
+                    similarities = torch.mm(img_feat, query_feat.t())
+                    
+                    # Hubness损失：最大化平均相似度
+                    hubness_loss = -similarities.mean()
+                    total_loss += hubness_loss
+                
+                total_loss = total_loss / batch_size
+                
+                # 反向传播
+                total_loss.backward()
+            
+            # 梯度上升更新
+            with torch.no_grad():
+                grad = adv_images.grad.data
+                
+                # 梯度裁剪
+                if self.config.gradient_clip_value > 0:
+                    torch.nn.utils.clip_grad_norm_([adv_images], self.config.gradient_clip_value)
+                
+                # 更新对抗样本
+                if self.config.norm_constraint == 'linf':
+                    adv_images.data += self.config.step_size * grad.sign()
+                    # L∞约束
+                    delta = torch.clamp(adv_images.data - batch_images, -self.config.epsilon, self.config.epsilon)
+                    adv_images.data = torch.clamp(batch_images + delta, 0, 1)
+                elif self.config.norm_constraint == 'l2':
+                    grad_norm = grad.view(batch_size, -1).norm(dim=1, keepdim=True)
+                    grad_normalized = grad / (grad_norm.view(-1, 1, 1, 1) + 1e-8)
+                    adv_images.data += self.config.step_size * grad_normalized
+                    # L2约束
+                    delta = adv_images.data - batch_images
+                    delta_norm = delta.view(batch_size, -1).norm(dim=1, keepdim=True)
+                    delta = delta / (delta_norm.view(-1, 1, 1, 1) + 1e-8) * torch.clamp(delta_norm, max=self.config.epsilon).view(-1, 1, 1, 1)
+                    adv_images.data = torch.clamp(batch_images + delta, 0, 1)
+                
+                # 清零梯度
+                adv_images.grad.zero_()
+        
+        # 评估攻击结果
+        with torch.no_grad():
+            final_image_features = self.clip_model.encode_image(adv_images)
+            final_image_features = final_image_features / final_image_features.norm(dim=-1, keepdim=True)
+            
+            for i in range(batch_size):
+                img_feat = final_image_features[i:i+1]
+                query_feat = query_features_list[i]
+                
+                # 计算最终hubness分数
+                similarities = torch.mm(img_feat, query_feat.t())
+                hubness_score = similarities.mean().item()
+                
+                # 计算扰动强度
+                perturbation = (adv_images[i] - batch_images[i]).abs()
+                if self.config.norm_constraint == 'linf':
+                    perturbation_strength = perturbation.max().item()
+                else:
+                    perturbation_strength = perturbation.view(-1).norm().item()
+                
+                # 判断攻击成功
+                success = hubness_score > self.config.success_threshold
+                
+                results.append({
+                    'success': success,
+                    'hubness_score': hubness_score,
+                    'perturbation_strength': perturbation_strength,
+                    'adversarial_image': adv_images[i].cpu(),
+                    'original_image': batch_images[i].cpu(),
+                    'target_queries': batch_queries[i],
+                    'iterations': self.config.num_iterations
+                })
         
         return results
     
-    def clear_cache(self):
-        """
-        清理缓存
-        """
-        self.attack_cache.clear()
-        self.hubness_cache.clear()
-        logger.info("Hubness攻击器缓存已清理")
+    def _set_random_seed(self, seed: int):
+        """设置随机种子以确保可复现性"""
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     
-    def get_stats(self) -> Dict[str, Any]:
-        """
-        获取统计信息
+    def _initialize_clip_model(self):
+        """初始化CLIP模型"""
+        try:
+            clip_config = CLIPConfig(
+                model_name=self.config.clip_model,
+                device=self.device
+            )
+            self.clip_model = CLIPModel(clip_config)
+            
+            # 设置多GPU支持
+            if self.config.enable_multi_gpu and len(self.device_ids) > 1:
+                if hasattr(self.clip_model, 'model'):
+                    self.clip_model.model = nn.DataParallel(
+                        self.clip_model.model, device_ids=self.device_ids
+                    )
+                else:
+                    self.clip_model = nn.DataParallel(
+                        self.clip_model, device_ids=self.device_ids
+                    )
+            
+            # 将模型移动到主设备
+            if hasattr(self.clip_model, 'to'):
+                self.clip_model = self.clip_model.to(self.device)
+            
+            logger.info(f"CLIP模型加载成功: {self.config.clip_model}")
+        except Exception as e:
+            logger.error(f"CLIP模型加载失败: {e}")
+            raise
+    
+    def compute_hubness(self, image_features: torch.Tensor, 
+                       text_features: torch.Tensor, 
+                       k: int = 10) -> float:
+        """计算hubness分数 - 基于原论文算法
         
+        Args:
+            image_features: 图像特征 [num_images, feature_dim]
+            text_features: 文本特征 [num_texts, feature_dim] 
+            k: k-近邻数量
+            
         Returns:
-            统计信息字典
+            hubness分数 (表示图像被检索为top-1的查询比例)
         """
-        return {
-            'attack_stats': self.attack_stats.copy(),
-            'cache_size': len(self.attack_cache),
-            'config': {
-                'epsilon': self.config.epsilon,
-                'num_iterations': self.config.num_iterations,
-                'k_neighbors': self.config.k_neighbors,
-                'hubness_threshold': self.config.hubness_threshold,
-                'attack_mode': self.config.attack_mode
-            }
-        }
-
-
-class AdaptiveHubnessAttacker(HubnessAttacker):
-    """自适应Hubness攻击器"""
-    
-    def __init__(self, config: HubnessAttackConfig):
-        super().__init__(config)
+        # 确保两个特征张量在同一设备上
+        if image_features.device != text_features.device:
+            text_features = text_features.to(image_features.device)
         
-        # 自适应参数
-        self.adaptation_history = []
-        self.success_rates = []
+        # 计算相似度矩阵
+        similarities = F.cosine_similarity(
+            text_features.unsqueeze(1),  # [num_texts, 1, feature_dim]
+            image_features.unsqueeze(0),  # [1, num_images, feature_dim]
+            dim=2
+        )  # [num_texts, num_images]
         
-        logger.info("自适应Hubness攻击器初始化完成")
+        # 对每个查询找到最相似的图像（top-1）
+        _, top_1_indices = torch.topk(similarities, 1, dim=1)  # [num_texts, 1]
+        
+        # 统计目标图像（第一个图像）被选为top-1的次数
+        target_image_idx = 0  # 我们关心的是第一个图像（对抗样本）
+        top_1_count = (top_1_indices.squeeze() == target_image_idx).sum().item()
+        
+        # 计算hubness分数：被检索为top-1的查询比例
+        hubness_score = top_1_count / text_features.size(0)
+        
+        return hubness_score
     
-    def adaptive_attack(self, image: Union[Image.Image, torch.Tensor], 
-                       text: str, 
-                       adaptation_steps: int = 5) -> Dict[str, Any]:
-        """
-        自适应攻击
+    def create_adversarial_hub(self, image: Union[torch.Tensor, Image.Image], 
+                              text_queries: List[str]) -> Dict[str, Any]:
+        """创建对抗性hub - 基于原论文算法
         
         Args:
             image: 输入图像
-            text: 输入文本
-            adaptation_steps: 自适应步数
+            text_queries: 文本查询列表
+            
+        Returns:
+            攻击结果字典
+        """
+        start_time = time.time()
+        
+        # 缓存检查
+        if self.cache is not None:
+            cache_key = self._generate_cache_key(image, text_queries)
+            if cache_key in self.cache:
+                logger.info("使用缓存结果")
+                return self.cache[cache_key]
+        
+        # 输入转换
+        if isinstance(image, Image.Image):
+            # 使用CLIP模型的预处理器
+            image_tensor = self.clip_model.preprocess(image).unsqueeze(0).to(self.device)
+        else:
+            image_tensor = image.to(self.device)
+            if image_tensor.dim() == 3:
+                image_tensor = image_tensor.unsqueeze(0)
+        
+        # 编码文本查询
+        text_features = self.clip_model.encode_text(text_queries)
+        
+        # 确保text_features在正确的设备上
+        if text_features.device != self.device:
+            text_features = text_features.to(self.device)
+        
+        # 执行攻击
+        result = self._perform_attack(image_tensor, text_features, text_queries)
+        
+        # 更新统计
+        attack_time = time.time() - start_time
+        self._update_attack_stats(result, attack_time)
+        
+        # 缓存结果
+        if self.cache is not None and len(self.cache) < self.config.cache_size:
+            self.cache[cache_key] = result
+        
+        return result
+    
+    def _perform_attack(self, image_tensor: torch.Tensor, 
+                       text_features: torch.Tensor,
+                       text_queries: List[str]) -> Dict[str, Any]:
+        """执行攻击的核心逻辑"""
+        original_image = image_tensor.clone().detach()
+        
+        # 初始化对抗样本
+        adv_image = original_image.clone().detach().requires_grad_(True)
+        
+        # 随机初始化扰动
+        if self.config.random_start:
+            noise = torch.randn_like(adv_image) * self.config.epsilon * 0.1
+            adv_image = adv_image + noise
+            adv_image = torch.clamp(adv_image, 
+                                  original_image - self.config.epsilon,
+                                  original_image + self.config.epsilon)
+            adv_image = torch.clamp(adv_image, self.config.clamp_min, self.config.clamp_max)
+            adv_image = adv_image.detach().requires_grad_(True)
+        
+        # 初始化扰动
+        perturbation = torch.zeros_like(original_image, requires_grad=True)
+        
+        # 随机初始化扰动
+        if self.config.random_start:
+            with torch.no_grad():
+                perturbation.data.uniform_(-self.config.epsilon, self.config.epsilon)
+        
+        best_loss = float('inf')
+        best_image = original_image.clone()
+        
+        # 优化循环 - 基于论文的梯度上升算法
+        for iteration in range(self.config.num_iterations):
+            # 前向传播
+            current_image = original_image + perturbation
+            current_image = torch.clamp(current_image, self.config.clamp_min, self.config.clamp_max)
+            
+            # 编码图像（需要梯度计算）
+            image_features = self.clip_model.encode_image_tensor(current_image, requires_grad=True)
+            
+            # 计算损失
+            loss = self._compute_hubness_loss(image_features, text_features)
+            
+            # 反向传播
+            loss.backward()
+            
+            # 获取梯度
+            grad = perturbation.grad.data
+            
+            # 梯度上升（最小化负相似度，即最大化相似度）
+            perturbation.data = perturbation.data - self.config.step_size * grad.sign()
+            
+            # 应用L∞范数约束
+            perturbation.data = torch.clamp(
+                perturbation.data, 
+                -self.config.epsilon, 
+                self.config.epsilon
+            )
+            
+            # 确保图像在有效范围内
+            perturbation.data = torch.clamp(
+                original_image + perturbation.data,
+                self.config.clamp_min,
+                self.config.clamp_max
+            ) - original_image
+            
+            # 清零梯度
+            perturbation.grad.zero_()
+            
+            # 更新最佳结果（损失越小越好，因为是负相似度）
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                best_image = current_image.clone().detach()
+            
+            # 早停检查和日志
+            if iteration % 50 == 0:
+                current_hubness = self.compute_hubness(
+                    image_features.unsqueeze(0), 
+                    text_features, 
+                    self.config.k_neighbors
+                )
+                logger.debug(f"迭代 {iteration}, 损失: {loss.item():.4f}, Hubness: {current_hubness:.4f}")
+        
+        # 计算最终hubness分数
+        with torch.no_grad():
+            final_features = self.clip_model.encode_image_tensor(best_image, requires_grad=False)
+            hubness_score = self.compute_hubness(
+                final_features.unsqueeze(0), 
+                text_features, 
+                self.config.k_neighbors
+            )
+        
+        # 计算扰动强度
+        perturbation = best_image - original_image
+        perturbation_norm = torch.norm(perturbation, p=float('inf')).item()
+        
+        return {
+            'adversarial_image': best_image.squeeze(0).cpu(),
+            'original_image': original_image.squeeze(0).cpu(),
+            'perturbation': perturbation.squeeze(0).cpu(),
+            'hubness_score': hubness_score,
+            'perturbation_norm': perturbation_norm,
+            'final_loss': best_loss,
+            'iterations': self.config.num_iterations,
+            'success': hubness_score > self.config.success_threshold,
+            'text_queries': text_queries
+        }
+    
+    def _compute_hubness_loss(self, image_features: torch.Tensor, 
+                             text_features: torch.Tensor) -> torch.Tensor:
+        """计算hubness损失函数
+        
+        基于原论文的损失函数设计，目标是最大化图像与所有目标查询的相似度
+        """
+        # 确保两个特征张量在同一设备上
+        if image_features.device != text_features.device:
+            text_features = text_features.to(image_features.device)
+        
+        # 确保特征已归一化
+        image_features = F.normalize(image_features, p=2, dim=-1)
+        text_features = F.normalize(text_features, p=2, dim=-1)
+        
+        # 计算图像特征与所有文本特征的相似度
+        similarities = torch.mm(image_features, text_features.t())  # [1, num_texts]
+        
+        # 损失：负平均相似度（最大化相似度以增加hubness）
+        loss = -similarities.mean()
+        
+        return loss
+    
+    def _generate_cache_key(self, image: Union[torch.Tensor, Image.Image], 
+                           text_queries: List[str]) -> str:
+        """生成缓存键"""
+        # 简化的缓存键生成
+        text_hash = hashlib.md5(''.join(text_queries).encode()).hexdigest()[:8]
+        return f"hubness_{text_hash}"
+    
+    def _update_attack_stats(self, result: Dict[str, Any], attack_time: float):
+        """更新攻击统计信息"""
+        self.attack_stats['total_attacks'] += 1
+        if result['success']:
+            self.attack_stats['successful_attacks'] += 1
+        
+        # 更新平均值
+        total = self.attack_stats['total_attacks']
+        self.attack_stats['average_iterations'] = (
+            (self.attack_stats['average_iterations'] * (total - 1) + result['iterations']) / total
+        )
+        self.attack_stats['average_hubness_score'] = (
+            (self.attack_stats['average_hubness_score'] * (total - 1) + result['hubness_score']) / total
+        )
+        self.attack_stats['average_attack_time'] = (
+            (self.attack_stats['average_attack_time'] * (total - 1) + attack_time) / total
+        )
+    
+    def attack(self, image: Union[torch.Tensor, Image.Image], 
+              text: str = None) -> Dict[str, Any]:
+        """执行Hubness攻击
+        
+        Args:
+            image: 输入图像
+            text: 可选的文本查询（如果不提供，使用随机查询）
             
         Returns:
             攻击结果
         """
+        # 图像预处理
+        if isinstance(image, Image.Image):
+            # 使用CLIP模型的预处理器
+            image_tensor = self.clip_model.preprocess(image)
+        else:
+            image_tensor = image
+        
+        # 生成或使用文本查询
+        if text is None:
+            text_queries = self._generate_random_queries()
+        else:
+            text_queries = [text]
+        
+        # 执行攻击
+        return self.create_adversarial_hub(image_tensor, text_queries)
+    
+    def attack_single(self, image: Union[torch.Tensor, Image.Image], 
+                     text: str) -> Dict[str, Any]:
+        """对单个图像-文本对执行攻击
+        
+        Args:
+            image: 输入图像
+            text: 文本查询
+            
+        Returns:
+            攻击结果，包含success, hubness, similarity_change, iterations等字段
+        """
         try:
-            best_result = None
-            best_success = False
+            # 执行攻击
+            result = self.attack(image, text)
             
-            for step in range(adaptation_steps):
-                # 根据历史调整参数
-                self._adapt_parameters(step)
-                
-                # 执行攻击
-                result = self.create_adversarial_hub(image, text)
-                
-                # 记录结果
-                self.adaptation_history.append({
-                    'step': step,
-                    'config': self.config.__dict__.copy(),
-                    'success': result['success'],
-                    'hubness': result['hubness']
-                })
-                
-                if result['success'] and (not best_success or 
-                    result['hubness'] > best_result['hubness']):
-                    best_result = result
-                    best_success = True
-                elif not best_success:
-                    best_result = result
-                
-                # 早停条件
-                if result['success'] and result['hubness'] >= self.config.target_hubness:
-                    break
-            
-            # 更新成功率
-            recent_successes = [h['success'] for h in self.adaptation_history[-10:]]
-            success_rate = sum(recent_successes) / len(recent_successes)
-            self.success_rates.append(success_rate)
-            
-            best_result['adaptation_steps'] = step + 1
-            best_result['final_success_rate'] = success_rate
-            
-            return best_result
-            
+            # 转换结果格式以匹配run_experiments.py的期望
+            return {
+                'success': result.get('success', False),
+                'hubness': result.get('hubness_score', 0.0),
+                'similarity_change': result.get('perturbation_norm', 0.0),
+                'iterations': result.get('iterations', 0),
+                'adversarial_image': result.get('adversarial_image'),
+                'original_image': result.get('original_image'),
+                'perturbation': result.get('perturbation'),
+                'final_loss': result.get('final_loss', float('inf'))
+            }
         except Exception as e:
-            logger.error(f"自适应攻击失败: {e}")
+            logger.error(f"单样本攻击失败: {e}")
             return {
                 'success': False,
+                'hubness': 0.0,
+                'similarity_change': 0.0,
+                'iterations': 0,
                 'error': str(e)
             }
     
-    def _adapt_parameters(self, step: int):
-        """
-        自适应调整参数
+    def _generate_random_queries(self) -> List[str]:
+        """生成随机文本查询"""
+        # 简化的随机查询生成
+        common_queries = [
+            "a photo of a cat", "a dog playing", "a beautiful landscape",
+            "a person walking", "a car on the road", "a bird flying",
+            "a flower in the garden", "a building in the city", "food on a plate",
+            "a sunset over the ocean"
+        ]
         
-        Args:
-            step: 当前步数
-        """
-        try:
-            if not self.adaptation_history:
-                return
-            
-            # 分析最近的成功率
-            recent_history = self.adaptation_history[-5:]
-            recent_success_rate = sum(h['success'] for h in recent_history) / len(recent_history)
-            
-            # 根据成功率调整参数
-            if recent_success_rate < 0.3:
-                # 成功率低，增加攻击强度
-                self.config.epsilon = min(self.config.epsilon * 1.1, 0.5)
-                self.config.num_iterations = min(self.config.num_iterations + 10, 200)
-                self.config.learning_rate = min(self.config.learning_rate * 1.1, 0.01)
-            elif recent_success_rate > 0.8:
-                # 成功率高，减少攻击强度以提高隐蔽性
-                self.config.epsilon = max(self.config.epsilon * 0.9, 0.01)
-                self.config.num_iterations = max(self.config.num_iterations - 5, 20)
-                self.config.learning_rate = max(self.config.learning_rate * 0.9, 0.0001)
-            
-            # 调整hubness相关参数
-            recent_hubness = [h['hubness'] for h in recent_history if h['hubness'] > 0]
-            if recent_hubness:
-                avg_hubness = np.mean(recent_hubness)
-                if avg_hubness < self.config.hubness_threshold:
-                    self.config.target_hubness = min(self.config.target_hubness + 0.05, 1.0)
-                else:
-                    self.config.target_hubness = max(self.config.target_hubness - 0.02, 0.5)
-            
-            logger.debug(f"参数自适应调整 (步骤 {step}): epsilon={self.config.epsilon:.3f}, "
-                        f"iterations={self.config.num_iterations}, lr={self.config.learning_rate:.4f}")
-            
-        except Exception as e:
-            logger.error(f"参数自适应调整失败: {e}")
+        num_queries = min(self.config.num_target_queries, len(common_queries))
+        return random.sample(common_queries, num_queries)
+    
+    def get_attack_stats(self) -> Dict[str, Any]:
+        """获取攻击统计信息"""
+        stats = self.attack_stats.copy()
+        if stats['total_attacks'] > 0:
+            stats['success_rate'] = stats['successful_attacks'] / stats['total_attacks']
+        else:
+            stats['success_rate'] = 0.0
+        return stats
 
 
-def create_hubness_attacker(config: Optional[HubnessAttackConfig] = None, 
-                           adaptive: bool = False) -> Union[HubnessAttacker, AdaptiveHubnessAttacker]:
-    """
-    创建Hubness攻击器实例
+class HubnessAttackPresets:
+    """Hubness攻击预设配置"""
+    
+    @staticmethod
+    def weak_attack() -> HubnessAttackConfig:
+        """弱攻击配置"""
+        return HubnessAttackConfig(
+            epsilon=8.0 / 255.0,
+            num_iterations=100,
+            learning_rate=0.01,
+            k_neighbors=5,
+            num_target_queries=50
+        )
+    
+    @staticmethod
+    def strong_attack() -> HubnessAttackConfig:
+        """强攻击配置"""
+        return HubnessAttackConfig(
+            epsilon=32.0 / 255.0,
+            num_iterations=1000,
+            learning_rate=0.05,
+            k_neighbors=20,
+            num_target_queries=200
+        )
+    
+    @staticmethod
+    def targeted_attack(target_concepts: List[str]) -> HubnessAttackConfig:
+        """针对性攻击配置"""
+        return HubnessAttackConfig(
+            attack_mode="targeted",
+            target_concepts=target_concepts,
+            epsilon=16.0 / 255.0,
+            num_iterations=500,
+            learning_rate=0.02,
+            k_neighbors=10,
+            num_target_queries=100
+        )
+    
+    @staticmethod
+    def paper_standard() -> HubnessAttackConfig:
+        """论文标准配置"""
+        return HubnessAttackConfig(
+            epsilon=16.0 / 255.0,
+            num_iterations=500,
+            learning_rate=0.02,
+            k_neighbors=10,
+            num_target_queries=100,
+            dataset_size=25000,
+            query_pool_size=1000
+        )
+
+
+def create_hubness_attacker(config: Optional[HubnessAttackConfig] = None) -> HubnessAttack:
+    """创建Hubness攻击器实例
     
     Args:
-        config: 攻击配置
-        adaptive: 是否使用自适应攻击器
+        config: 攻击配置，如果为None则使用默认配置
         
     Returns:
-        Hubness攻击器实例
+        HubnessAttack实例
     """
     if config is None:
         config = HubnessAttackConfig()
     
-    if adaptive:
-        return AdaptiveHubnessAttacker(config)
-    else:
-        return HubnessAttacker(config)
+    return HubnessAttack(config)

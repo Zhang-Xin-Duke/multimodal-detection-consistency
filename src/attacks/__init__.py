@@ -5,8 +5,8 @@
 
 from .hubness_attack import (
     HubnessAttackConfig,
-    HubnessAttacker,
-    AdaptiveHubnessAttacker,
+    HubnessAttack as HubnessAttacker,
+    HubnessAttackPresets,
     create_hubness_attacker
 )
 
@@ -20,6 +20,34 @@ from .text_attack import (
     TextAttackConfig,
     TextAttacker,
     create_text_attacker
+)
+
+from .fgsm_attack import (
+    FGSMAttackConfig,
+    FGSMAttacker,
+    FGSMAttackPresets,
+    create_fgsm_attacker
+)
+
+from .cw_attack import (
+    CWAttackConfig,
+    CWAttacker,
+    CWAttackPresets,
+    create_cw_attacker
+)
+
+from .fsta_attack import (
+    FSTAAttacker,
+    FSTAAttackConfig,
+    FSTAAttackPresets,
+    create_fsta_attacker
+)
+
+from .sma_attack import (
+    SMAAttacker,
+    SMAAttackConfig,
+    SMAAttackPresets,
+    create_sma_attacker
 )
 
 __all__ = [
@@ -37,5 +65,29 @@ __all__ = [
     # 文本攻击
     'TextAttackConfig',
     'TextAttacker',
-    'create_text_attacker'
+    'create_text_attacker',
+    
+    # FGSM攻击
+    'FGSMAttackConfig',
+    'FGSMAttacker',
+    'FGSMAttackPresets',
+    'create_fgsm_attacker',
+    
+    # C&W攻击
+    'CWAttackConfig',
+    'CWAttacker',
+    'CWAttackPresets',
+    'create_cw_attacker',
+    
+    # FSTA攻击
+    'FSTAAttacker',
+    'FSTAAttackConfig',
+    'FSTAAttackPresets',
+    'create_fsta_attacker',
+    
+    # SMA攻击
+    'SMAAttacker',
+    'SMAAttackConfig',
+    'SMAAttackPresets',
+    'create_sma_attacker'
 ]

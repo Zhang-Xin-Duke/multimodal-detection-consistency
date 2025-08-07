@@ -1,46 +1,91 @@
-"""工具模块包
+"""工具模块
 
-提供配置管理、数据加载、指标计算、可视化等工具功能。
+提供配置管理、硬件检测、多GPU处理、CUDA工具、评估指标和可视化等功能。
 """
 
-from .config import (
-    ModelConfig, DataConfig, ExperimentConfig, AttackConfig, DefenseConfig, EvaluationConfig,
-    ConfigManager, config_manager,
-    get_config, load_config, save_config, update_config, validate_config
+from .config_manager import ConfigManager
+from .hardware_detector import HardwareDetector
+from .multi_gpu_processor import MultiGPUProcessor, GPUTask, GPUResult
+from .cuda_utils import (
+    CUDADeviceManager, 
+    GPUMonitor, 
+    CUDAErrorHandler,
+    get_device_manager,
+    check_cuda_available,
+    estimate_model_memory,
+    optimize_batch_size
 )
-
-from .data_loader import (
-    DatasetInfo, ImageTextDataset, COCODataLoader, Flickr30kDataLoader,
-    DataLoaderManager, create_data_loader_manager, collate_image_text_batch
-)
-
 from .metrics import (
-    MetricResult, RetrievalMetrics, DetectionMetrics,
-    RetrievalEvaluator, DetectionEvaluator, SimilarityMetrics,
-    MetricsCalculator, create_metrics_calculator
+    SimilarityCalculator,
+    DetectionEvaluator, 
+    RetrievalEvaluator,
+    MetricsAggregator,
+    DetectionMetrics,
+    RetrievalMetrics,
+    SimilarityMetrics
 )
-
 from .visualization import (
-    PlotConfig, MetricsVisualizer, InteractiveVisualizer,
-    ExperimentVisualizer, create_experiment_visualizer
+    VisualizationManager,
+    ROCVisualizer,
+    PRVisualizer,
+    DistributionVisualizer,
+    DimensionalityVisualizer,
+    ConfusionMatrixVisualizer,
+    MetricsVisualizer,
+    create_visualization_manager
+)
+from .seed import (
+    set_random_seed,
+    get_random_seed,
+    create_reproducible_generator,
+    SeedContext,
+    DEFAULT_SEED
 )
 
 __all__ = [
     # 配置管理
-    'ModelConfig', 'DataConfig', 'ExperimentConfig', 'AttackConfig', 'DefenseConfig', 'EvaluationConfig',
-    'ConfigManager', 'config_manager',
-    'get_config', 'load_config', 'save_config', 'update_config', 'validate_config',
+    'ConfigManager',
     
-    # 数据加载
-    'DatasetInfo', 'ImageTextDataset', 'COCODataLoader', 'Flickr30kDataLoader',
-    'DataLoaderManager', 'create_data_loader_manager', 'collate_image_text_batch',
+    # 硬件检测
+    'HardwareDetector',
     
-    # 指标计算
-    'MetricResult', 'RetrievalMetrics', 'DetectionMetrics',
-    'RetrievalEvaluator', 'DetectionEvaluator', 'SimilarityMetrics',
-    'MetricsCalculator', 'create_metrics_calculator',
+    # 多GPU处理
+    'MultiGPUProcessor',
+    'GPUTask',
+    'GPUResult',
+    
+    # CUDA工具
+    'CUDADeviceManager',
+    'GPUMonitor',
+    'CUDAErrorHandler',
+    'get_device_manager',
+    'check_cuda_available',
+    'estimate_model_memory',
+    'optimize_batch_size',
+    
+    # 评估指标
+    'SimilarityCalculator',
+    'DetectionEvaluator',
+    'RetrievalEvaluator',
+    'MetricsAggregator',
+    'DetectionMetrics',
+    'RetrievalMetrics',
+    'SimilarityMetrics',
     
     # 可视化
-    'PlotConfig', 'MetricsVisualizer', 'InteractiveVisualizer',
-    'ExperimentVisualizer', 'create_experiment_visualizer'
+    'VisualizationManager',
+    'ROCVisualizer',
+    'PRVisualizer',
+    'DistributionVisualizer',
+    'DimensionalityVisualizer',
+    'ConfusionMatrixVisualizer',
+    'MetricsVisualizer',
+    'create_visualization_manager',
+    
+    # 随机种子
+    'set_random_seed',
+    'get_random_seed',
+    'create_reproducible_generator',
+    'SeedContext',
+    'DEFAULT_SEED'
 ]

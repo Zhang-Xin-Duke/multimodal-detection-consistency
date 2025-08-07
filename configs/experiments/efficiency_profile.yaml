@@ -1,0 +1,286 @@
+# 效率性能测试配置
+# 测试系统的吞吐量、延迟和资源使用情况
+
+experiment:
+  name: "efficiency_profile"
+  description: "系统效率性能分析：吞吐量、延迟、内存使用和计算成本评估"
+  version: "1.0"
+  type: "performance_benchmark"
+  
+  # 实验设置
+  settings:
+    seed: 42
+    deterministic: false    # 性能测试不需要完全确定性
+    num_runs: 10            # 多次运行获得稳定的性能指标
+    warmup_runs: 3          # 预热运行
+    save_results: true
+    
+# 测试场景配置
+test_scenarios:
+  # 不同batch size测试
+  batch_size_scaling:
+    enabled: true
+    batch_sizes: [1, 4, 8, 16, 32, 64, 128]
+    dataset_size: 1000
+    
+  # 不同数据集大小测试
+  dataset_scaling:
+    enabled: true
+    dataset_sizes: [100, 500, 1000, 2000, 5000]
+    batch_size: 32
+    
+  # 不同组件组合测试
+  component_combinations:
+    enabled: true
+    combinations:
+      - name: "base_only"
+        components: ["base_consistency"]
+      - name: "base_tvc"
+        components: ["base_consistency", "text_variant_consistency"]
+      - name: "base_genref"
+        components: ["base_consistency", "generative_references"]
+      - name: "full_system"
+        components: ["base_consistency", "text_variant_consistency", "generative_references"]
+        
+  # 不同硬件配置测试
+  hardware_configurations:
+    enabled: true
+    configs:
+      - name: "single_gpu"
+        gpus: 1
+        gpu_memory: "8GB"
+      - name: "dual_gpu"
+        gpus: 2
+        gpu_memory: "16GB"
+      - name: "quad_gpu"
+        gpus: 4
+        gpu_memory: "32GB"
+        
+# 数据集配置
+dataset:
+  name: "coco"
+  config: "configs/datasets/coco.yaml"
+  # 性能测试使用固定子集
+  subset_sizes: [100, 500, 1000, 2000, 5000]
+  
+# 模型配置
+model:
+  # CLIP模型
+  clip:
+    name: "ViT-B/32"
+    device: "cuda"
+    optimization:
+      use_half_precision: true
+      use_torch_compile: true
+      use_flash_attention: false
+      
+  # Qwen模型
+  qwen:
+    model_name: "Qwen/Qwen-7B-Chat"
+    device: "cuda"
+    optimization:
+      use_8bit: false
+      use_4bit: false
+      batch_inference: true
+      
+  # Stable Diffusion模型
+  stable_diffusion:
+    model_name: "runwayml/stable-diffusion-v1-5"
+    device: "cuda"
+    optimization:
+      use_xformers: true
+      use_torch_compile: false
+      enable_cpu_offload: false
+      
+# 性能指标配置
+metrics:
+  # 延迟指标
+  latency:
+    - "end_to_end_latency"          # 端到端延迟
+    - "component_latency"           # 各组件延迟
+    - "model_inference_latency"     # 模型推理延迟
+    - "preprocessing_latency"       # 预处理延迟
+    - "postprocessing_latency"      # 后处理延迟
+    
+  # 吞吐量指标
+  throughput:
+    - "samples_per_second"          # 每秒处理样本数
+    - "images_per_second"           # 每秒处理图像数
+    - "tokens_per_second"           # 每秒处理token数
+    
+  # 资源使用指标
+  resource_usage:
+    - "gpu_memory_usage"            # GPU内存使用
+    - "gpu_utilization"             # GPU利用率
+    - "cpu_usage"                   # CPU使用率
+    - "system_memory_usage"         # 系统内存使用
+    - "disk_io"                     # 磁盘IO
+    
+  # 能耗指标
+  energy:
+    - "gpu_power_consumption"       # GPU功耗
+    - "total_energy_consumption"    # 总能耗
+    
+  # 扩展性指标
+  scalability:
+    - "batch_size_efficiency"       # batch size扩展效率
+    - "multi_gpu_speedup"           # 多GPU加速比
+    - "memory_scaling"              # 内存扩展性
+    
+# 性能分析配置
+performance_analysis:
+  # 瓶颈分析
+  bottleneck_analysis:
+    enabled: true
+    profiling_tools: ["pytorch_profiler", "nvidia_nsight"]
+    
+  # 内存分析
+  memory_analysis:
+    enabled: true
+    track_allocations: true
+    detect_leaks: true
+    
+  # 计算图分析
+  computation_analysis:
+    enabled: true
+    trace_execution: true
+    analyze_operators: true
+    
+# 优化建议配置
+optimization_suggestions:
+  enabled: true
+  
+  # 自动调优
+  auto_tuning:
+    enabled: true
+    parameters:
+      - "batch_size"
+      - "num_workers"
+      - "prefetch_factor"
+      
+  # 硬件建议
+  hardware_recommendations:
+    enabled: true
+    consider_cost: true
+    
+# 基准对比
+benchmark_comparison:
+  enabled: true
+  
+  # 与基线方法对比
+  baselines:
+    - name: "naive_detection"
+      description: "简单阈值检测"
+      
+    - name: "single_model"
+      description: "单模型检测"
+      
+  # 与其他系统对比
+  external_systems:
+    - name: "adversarial_detector_x"
+      description: "其他对抗检测系统"
+      
+# 实验流程
+pipeline:
+  stages:
+    1. "environment_setup":
+        - initialize_profilers
+        - setup_monitoring
+        - prepare_datasets
+        
+    2. "baseline_profiling":
+        - profile_individual_components
+        - measure_baseline_performance
+        
+    3. "scaling_tests":
+        - batch_size_scaling_test
+        - dataset_scaling_test
+        - hardware_scaling_test
+        
+    4. "optimization_tests":
+        - test_optimization_techniques
+        - compare_optimization_strategies
+        
+    5. "bottleneck_analysis":
+        - identify_performance_bottlenecks
+        - analyze_resource_utilization
+        
+    6. "recommendation_generation":
+        - generate_optimization_suggestions
+        - create_performance_report
+        
+# 输出配置
+output:
+  base_path: "experiments/results/efficiency_profile"
+  
+  # 保存内容
+  save:
+    performance_metrics: true
+    profiling_data: true
+    optimization_suggestions: true
+    benchmark_comparisons: true
+    
+  # 报告生成
+  reports:
+    - "performance_summary.md"
+    - "bottleneck_analysis.pdf"
+    - "optimization_guide.html"
+    - "benchmark_comparison.xlsx"
+    
+  # 可视化
+  visualizations:
+    - "latency_distribution_plots"
+    - "throughput_scaling_curves"
+    - "resource_utilization_heatmaps"
+    - "performance_comparison_bars"
+    - "optimization_impact_charts"
+    
+# 监控配置
+monitoring:
+  # 实时监控
+  real_time:
+    enabled: true
+    update_interval: 1      # 秒
+    
+  # 系统监控
+  system_monitoring:
+    enabled: true
+    tools: ["nvidia-smi", "htop", "iostat"]
+    
+  # 应用监控
+  application_monitoring:
+    enabled: true
+    frameworks: ["tensorboard", "wandb"]
+    
+# 资源配置
+resources:
+  gpu_memory: "24GB"
+  cpu_cores: 16
+  max_runtime: "8h"
+  
+  # 资源限制
+  limits:
+    max_gpu_memory_per_process: "20GB"
+    max_cpu_usage: "80%"
+    
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "efficiency_profile.log"
+  performance_logging: true
+  detailed_profiling: true
+  
+# 错误处理
+error_handling:
+  continue_on_error: true
+  max_retries: 2
+  timeout: 7200           # 2小时超时
+  
+  # 性能异常检测
+  anomaly_detection:
+    enabled: true
+    thresholds:
+      max_latency: 10.0     # 秒
+      min_throughput: 1.0   # samples/sec
+      max_memory_usage: 0.9 # 90%

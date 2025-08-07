@@ -1,0 +1,58 @@
+detection:
+  batch_size: 32
+  num_workers: 8
+  prefetch_factor: 4
+hardware_info:
+  cpu_count: 88
+  cuda_version: '12.8'
+  gpu_count: 6
+  gpu_names:
+  - NVIDIA GeForce RTX 4090
+  - NVIDIA GeForce RTX 4090
+  - NVIDIA GeForce RTX 4090
+  - NVIDIA GeForce RTX 4090
+  - NVIDIA GeForce RTX 4090
+  - NVIDIA GeForce RTX 4090
+  profile_used: high_performance
+  system_memory_gb: 251.75
+  total_gpu_memory_gb: 284.2890625
+multi_gpu:
+  batch_size_per_gpu: 8
+  enable_compile: true
+  enable_mixed_precision: true
+  gpu_ids:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  load_balancing: true
+  max_workers: 12
+  memory_fraction: 0.9
+stable_diffusion:
+  device: cuda
+  enable_attention_slicing: true
+  enable_cpu_offload: false
+  enable_flash_attention: false
+  enable_multi_gpu: true
+  enable_safety_checker: false
+  enable_tensor_cores: true
+  enable_xformers: true
+  gpu_ids:
+  - 0
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  guidance_scale: 7.5
+  height: 512
+  max_concurrent_generations: 12
+  max_models_per_gpu: 2
+  model_name: runwayml/stable-diffusion-v1-5
+  models_per_gpu: 2
+  num_images_per_prompt: 4
+  num_inference_steps: 50
+  torch_dtype: float16
+  width: 512

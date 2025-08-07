@@ -1,0 +1,77 @@
+# COCO数据集配置
+name: "coco"
+type: "image_caption"
+
+# 数据路径
+data_dir: "./data/raw/coco"
+processed_dir: "./data/processed/coco"
+
+# 数据分割
+splits:
+  train:
+    images: "train2017"
+    annotations: "annotations/captions_train2017.json"
+    size: 118287  # 总样本数
+  val:
+    images: "val2017"
+    annotations: "annotations/captions_val2017.json"
+    size: 5000
+  test:
+    images: "val2017"  # 使用验证集作为测试集
+    annotations: "annotations/captions_val2017.json"
+    size: 5000
+
+# 采样配置
+sampling:
+  strategy: "random"  # random, balanced, stratified
+  num_samples: 1000  # 默认采样数量
+  min_caption_length: 5
+  max_caption_length: 100
+  filter_duplicates: true
+  seed: 42
+
+# 预处理配置
+preprocessing:
+  image:
+    resize: [224, 224]
+    normalize: true
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+    format: "RGB"
+  text:
+    lowercase: false
+    remove_punctuation: false
+    max_length: 77  # CLIP文本编码器限制
+    tokenizer: "clip"
+
+# 缓存配置
+cache:
+  enabled: true
+  features_dir: "./data/cache/features/coco"
+  images_dir: "./data/cache/images/coco"
+  compression: true
+
+# 数据加载配置
+loader:
+  batch_size: 32
+  num_workers: 4
+  shuffle: true
+  pin_memory: true
+  drop_last: false
+
+# 质量控制
+quality:
+  min_image_size: [224, 224]
+  max_image_size: [2048, 2048]
+  allowed_formats: ["jpg", "jpeg", "png"]
+  check_corruption: true
+  validate_captions: true
+
+# 下载配置
+download:
+  auto_download: false
+  urls:
+    train_images: "http://images.cocodataset.org/zips/train2017.zip"
+    val_images: "http://images.cocodataset.org/zips/val2017.zip"
+    annotations: "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
+  verify_checksums: true

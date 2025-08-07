@@ -1,0 +1,85 @@
+# Hubness攻击配置
+# 基于《Adversarial Hubness in Multi-Modal Retrieval》论文复现
+# 作者: 张昕 (ZHANG XIN) - Duke University
+
+attack:
+  name: "hubness"
+  type: "hubness_attack"
+  
+  # 核心攻击参数
+  parameters:
+    # 基础攻击参数 - 基于论文标准
+    epsilon: 0.0627         # 扰动幅度 (16/255) - 论文标准
+    num_iterations: 500     # 攻击迭代次数 - 论文标准
+    step_size: 0.02         # 步长 - 论文标准
+    
+    # Hubness核心参数
+    k_neighbors: 10         # k近邻数量
+    num_target_queries: 100 # 目标查询数量 - 论文标准
+    hubness_weight: 1.0     # hubness损失权重
+    success_threshold: 0.84 # 攻击成功阈值 (21000/25000) - 论文标准
+    
+    # 优化参数
+    learning_rate: 0.01     # 学习率
+    momentum: 0.9           # 动量系数
+    weight_decay: 1e-4      # 权重衰减
+    
+    # 攻击模式
+    attack_mode: "untargeted"  # 攻击模式: untargeted, targeted
+    
+    # 实验参数
+    random_seed: 42         # 随机种子
+    dataset_size: 1000      # 数据集大小
+    query_pool_size: 100    # 查询池大小
+    
+    # 模型和设备配置
+    clip_model: "ViT-B/32"  # CLIP模型
+    device: "cuda"          # 设备: auto, cpu, cuda
+    
+  # 批处理配置
+  batch:
+    size: 32
+    accumulation_steps: 1
+    
+  # 多GPU配置
+  multi_gpu:
+    enabled: true
+    gpu_ids: [0, 1, 2, 3, 4, 5]
+    batch_size_per_gpu: 8
+    sync_bn: false
+    
+  # 评估设置
+  evaluation:
+    batch_size: 32
+    num_samples: 1000       # 评估样本数
+    save_adversarial: true  # 保存对抗样本
+    
+  # 输出设置
+  output:
+    save_path: "experiments/results/hubness_attack"
+    log_interval: 10        # 日志间隔
+    save_interval: 100      # 保存间隔
+    
+# 数据集配置
+dataset:
+  name: "coco"
+  split: "val"
+  subset_size: 5000       # 使用的数据子集大小
+  
+# 模型配置
+model:
+  name: "clip"
+  variant: "ViT-B/32"
+  device: "cuda"
+  
+# 实验配置
+experiment:
+  seed: 42
+  num_workers: 4
+  pin_memory: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "hubness_attack.log"

@@ -1,0 +1,130 @@
+# Conceptual Captions 3M (CC3M) 数据集配置
+# 3.3M张图像，每张图像有一个自动生成的描述
+
+dataset:
+  name: "cc3m"
+  type: "image_text"
+  
+  # 数据路径
+  paths:
+    root: "data/raw/cc3m"
+    images: "data/raw/cc3m/images"
+    annotations: "data/raw/cc3m/Train_GCC-training.tsv"
+    validation_annotations: "data/raw/cc3m/Validation_GCC-1.1.0-Validation.tsv"
+    
+  # 数据分割
+  splits:
+    train:
+      size: 3000000
+      annotation_file: "Train_GCC-training.tsv"
+    val:
+      size: 15840
+      annotation_file: "Validation_GCC-1.1.0-Validation.tsv"
+    test:
+      size: 15840
+      annotation_file: "Validation_GCC-1.1.0-Validation.tsv"
+      
+  # 数据加载配置
+  loading:
+    batch_size: 128         # 较大的batch size用于大数据集
+    num_workers: 8          # 更多worker用于并行加载
+    pin_memory: true
+    shuffle: true
+    drop_last: true
+    prefetch_factor: 2
+    
+  # 图像预处理
+  image_preprocessing:
+    resize: [224, 224]
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+    augmentation:
+      horizontal_flip: 0.5
+      color_jitter:
+        brightness: 0.2
+        contrast: 0.2
+        saturation: 0.2
+        hue: 0.1
+      random_crop:
+        size: [224, 224]
+        scale: [0.8, 1.0]
+        
+  # 文本预处理
+  text_preprocessing:
+    max_length: 77
+    tokenizer: "clip"
+    lowercase: true
+    remove_punctuation: false
+    filter_short_captions: true
+    min_caption_length: 5
+    max_caption_length: 200
+    
+  # 采样配置
+  sampling:
+    strategy: "random"      # random, stratified
+    subset_size: null       # 使用全部数据
+    validation_subset: 5000 # 验证集子集大小
+    
+  # 数据过滤
+  filtering:
+    min_image_size: [64, 64]
+    max_image_size: [2048, 2048]
+    filter_corrupted: true
+    filter_duplicates: true
+    similarity_threshold: 0.95
+    
+  # 缓存配置
+  cache:
+    enabled: true
+    cache_dir: "data/cache/cc3m"
+    features_cache: "data/cache/features/cc3m_features.h5"
+    chunk_size: 10000       # 分块缓存
+    
+  # 下载配置（如果需要）
+  download:
+    enabled: false
+    num_threads: 16
+    timeout: 30
+    retry_attempts: 3
+    
+# 评估配置
+evaluation:
+  metrics:
+    - "retrieval_recall@1"
+    - "retrieval_recall@5"
+    - "retrieval_recall@10"
+    - "retrieval_recall@50"
+    - "image_to_text_recall"
+    - "text_to_image_recall"
+    - "mean_rank"
+    - "median_rank"
+    
+  # 检索配置
+  retrieval:
+    top_k: [1, 5, 10, 20, 50]
+    similarity_metric: "cosine"
+    normalize_features: true
+    use_faiss: true         # 使用FAISS加速检索
+    
+  # 评估子集
+  eval_subset_size: 5000    # 评估时使用的子集大小
+  
+# 实验配置
+experiment:
+  seed: 42
+  deterministic: false      # 大数据集可以不要求完全确定性
+  benchmark: true
+  
+# 内存管理
+memory:
+  max_memory_usage: "80%"   # 最大内存使用率
+  garbage_collection: true
+  clear_cache_interval: 1000
+  
+# 日志配置
+logging:
+  level: "INFO"
+  log_interval: 1000        # 较大的日志间隔
+  save_samples: false       # 不保存样本以节省空间
+  progress_bar: true

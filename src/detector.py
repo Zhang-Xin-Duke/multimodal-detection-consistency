@@ -16,11 +16,65 @@ from PIL import Image
 from sklearn.metrics import roc_curve, auc
 from .models.clip_model import CLIPModel, CLIPConfig
 
-from .utils.metrics import SimilarityMetrics, DetectionEvaluator
+from .utils.metrics import SimilarityMetrics, DetectionEvaluator, SimilarityCalculator
 import warnings
 from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ConsistencyScore:
+    """一致性分数数据类"""
+    direct_score: float = 0.0
+    text_variant_score: float = 0.0
+    generative_ref_score: float = 0.0
+    combined_score: float = 0.0
+    is_adversarial: bool = False
+    confidence: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'direct_score': self.direct_score,
+            'text_variant_score': self.text_variant_score,
+            'generative_ref_score': self.generative_ref_score,
+            'combined_score': self.combined_score,
+            'is_adversarial': self.is_adversarial,
+            'confidence': self.confidence
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ConsistencyScore':
+        """从字典创建"""
+        return cls(**data)
+
+
+class ThresholdManager:
+    """阈值管理器"""
+    
+    def __init__(self, initial_threshold: float = 0.5):
+        self.threshold = initial_threshold
+        self.detection_history = []
+        
+    def update_threshold(self, new_threshold: float):
+        """更新阈值"""
+        self.threshold = new_threshold
+        
+    def is_adversarial(self, score: float) -> bool:
+        """判断是否为对抗样本"""
+        return score < self.threshold
+        
+    def batch_detection(self, scores: List[float]) -> List[bool]:
+        """批量检测"""
+        return [self.is_adversarial(score) for score in scores]
+        
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        return {
+            'current_threshold': self.threshold,
+            'detection_count': len(self.detection_history)
+        }
 
 
 class AggregationMethod(Enum):
@@ -177,7 +231,7 @@ class AdversarialDetector:
         self.sd_generator = None
         
         # 相似性计算器
-        self.similarity_metrics = SimilarityMetrics()
+        self.similarity_calculator = SimilarityCalculator()
         
         # 检测评估器
         self.detection_evaluator = DetectionEvaluator()
@@ -241,15 +295,17 @@ class AdversarialDetector:
         """
         try:
             from src.text_augment import TextAugmenter, TextAugmentConfig
-            from .models import QwenModel, QwenConfig, CLIPModel, CLIPConfig
-            from .utils.config import get_qwen_cache_dir
             
-            qwen_config = QwenConfig(cache_dir=get_qwen_cache_dir())  # 使用统一的缓存目录配置
-            clip_config = CLIPConfig(model_name=self.config.clip_model, device=self.config.device)
-            text_augment_config = TextAugmentConfig(num_variants=num_variants, similarity_threshold=similarity_threshold)
-            qwen_model = QwenModel(qwen_config)
-            clip_model_for_augmenter = CLIPModel(clip_config)
-            text_augmenter = TextAugmenter(qwen_model, clip_model_for_augmenter, text_augment_config)
+            # 创建文本增强配置，使用正确的参数名
+            text_augment_config = TextAugmentConfig(
+                max_variants=num_variants, 
+                min_similarity_threshold=similarity_threshold,
+                paraphrase_model="Qwen/Qwen2-7B-Instruct",
+                device=self.config.device
+            )
+            
+            # 使用正确的参数初始化TextAugmenter
+            text_augmenter = TextAugmenter(text_augment_config)
             logger.info("文本增强器初始化完成")
             
             return text_augmenter
@@ -471,7 +527,7 @@ class AdversarialDetector:
             # 计算输入图像与参考图像的相似性
             similarities = []
             for ref_image in reference_images:
-                similarity = self.similarity_metrics.compute_cosine_similarity(
+                similarity = self.similarity_calculator.cosine_similarity(
                     self._image_to_features(image),
                     self._image_to_features(ref_image)
                 )
@@ -516,11 +572,8 @@ class AdversarialDetector:
             # 计算图像-文本相似性
             image_text_similarity = self._get_clip_model().get_text_image_similarity(text, image).item()
             
-            # 计算一致性分数
-            consistency_score = self.similarity_metrics.compute_consistency_score(
-                np.array([image_text_similarity]),
-                aggregation_method='mean'
-            )
+            # 计算一致性分数（简单使用相似度值作为一致性分数）
+            consistency_score = float(image_text_similarity)
             
             # 检测分数：低一致性表示高对抗性概率
             detection_score = 1.0 - consistency_score
@@ -547,13 +600,41 @@ class AdversarialDetector:
             特征向量
         """
         try:
+            clip_model = self._get_clip_model()
+            
             if isinstance(image, torch.Tensor):
-                # 假设是已经处理过的tensor
-                return image.cpu().numpy().flatten()
+                # 对于torch.Tensor，使用CLIP模型的encode_image_tensor方法
+                # 确保张量格式正确 (C, H, W) 或 (B, C, H, W)
+                if image.dim() == 3:
+                    # 单张图像 (C, H, W) -> (1, C, H, W)
+                    image = image.unsqueeze(0)
+                elif image.dim() == 4 and image.size(0) == 1:
+                    # 已经是批次格式 (1, C, H, W)
+                    pass
+                elif image.dim() == 4 and image.size(0) > 1:
+                    # 多张图像，只取第一张
+                    image = image[0:1]
+                else:
+                    logger.warning(f"意外的图像张量维度: {image.shape}")
+                    # 尝试reshape为合理的图像格式
+                    if image.numel() == 3 * 224 * 224:  # 假设是224x224的RGB图像
+                        image = image.view(1, 3, 224, 224)
+                    else:
+                        raise ValueError(f"无法处理的图像张量形状: {image.shape}")
+                
+                # 使用CLIP编码
+                features = clip_model.encode_image_tensor(image, requires_grad=False)
+                # 确保返回单个特征向量
+                if features.dim() > 1:
+                    features = features.squeeze(0)  # 移除批次维度
+                return features.cpu().numpy()
             else:
                 # PIL图像，使用CLIP编码
-                features = self._get_clip_model().encode_image(image)
-                return features.flatten()
+                features = clip_model.encode_image([image])  # 传入列表
+                # 确保返回单个特征向量
+                if features.dim() > 1:
+                    features = features.squeeze(0)  # 移除批次维度
+                return features.cpu().numpy()
                 
         except Exception as e:
             logger.error(f"图像特征提取失败: {e}")

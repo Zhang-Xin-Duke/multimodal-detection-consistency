@@ -1,0 +1,64 @@
+{
+  "experiment_name": "multimodal_detection_experiment",
+  "timestamp": 1754481023.8948333,
+  "data_size": 50,
+  "scenarios": {
+    "scenario_1": {
+      "scenario_name": "no_defense_with_attack",
+      "description": "无防御时攻击成功率测试",
+      "attack_success_rates": {
+        "hubness": 1.0,
+        "pgd": 1.0
+      },
+      "total_samples": 50
+    },
+    "scenario_2": {
+      "scenario_name": "no_defense_no_attack",
+      "description": "无防御无攻击时检索正确率测试",
+      "retrieval_accuracy": 0.8874540118847363,
+      "total_queries": 50,
+      "error": "name 'TSNEVisualizer' is not defined"
+    },
+    "scenario_3": {
+      "scenario_name": "defense_no_attack",
+      "description": "无攻击有防御时检索成功率测试",
+      "retrieval_success_rate": 0.8950714306409916,
+      "defense_overhead": 0.24639878836228102,
+      "total_queries": 50,
+      "error": "name 'TSNEVisualizer' is not defined"
+    },
+    "scenario_4": {
+      "scenario_name": "defense_with_attack",
+      "description": "有攻击有防御时防御成功率测试",
+      "defense_success_rates": {
+        "hubness": 0.7561810178271043,
+        "pgd": 0.7097990912717107
+      },
+      "detection_rates": {
+        "hubness": 0.8950714306409916,
+        "pgd": 0.7897987726295554
+      },
+      "total_samples": 50,
+      "error": "name 'TSNEVisualizer' is not defined"
+    }
+  },
+  "metadata": {
+    "config_file": "configs/experiments/coco_pgd_full.yaml",
+    "dataset": "coco",
+    "device": "cuda",
+    "actual_data_size": 50
+  },
+  "summary": {
+    "experiment_overview": {
+      "total_scenarios": 4,
+      "successful_scenarios": 1,
+      "failed_scenarios": 3
+    },
+    "key_metrics": {
+      "attack_success_rates": {
+        "hubness": 1.0,
+        "pgd": 1.0
+      }
+    }
+  }
+}

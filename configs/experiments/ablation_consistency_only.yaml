@@ -1,0 +1,83 @@
+# 消融实验配置：仅一致性度量模块
+# 作者: 张昕 (zhang.xin@duke.edu)
+# 机构: Duke University
+
+# 继承基础配置
+inherits:
+  - ../default.yaml
+  - ../datasets/coco.yaml
+  - ../attacks/pgd.yaml
+
+# 实验特定配置
+experiment:
+  name: "ablation_consistency_only"
+  description: "消融实验：仅使用一致性度量模块，不使用文本变体和参考图像"
+  type: "ablation"
+  
+# 数据集配置覆盖
+dataset:
+  name: "coco"
+  num_samples: 500  # 消融实验使用较少样本
+  
+# 攻击配置覆盖
+attack:
+  method: "pgd"
+  params:
+    epsilon: 8
+    alpha: 2
+    num_iter: 10
+    batch_size: 32
+    
+# 防御配置覆盖 - 仅启用一致性检测
+defense:
+  text_variants:
+    enabled: false  # 禁用文本变体
+    
+  retrieval_reference:
+    enabled: false  # 禁用检索参考
+    
+  generative_reference:
+    enabled: false  # 禁用生成参考
+    
+  consistency_detection:
+    enabled: true
+    similarity_threshold: 0.85
+    voting_strategy: "single"  # 单一投票策略
+    adaptive_threshold: true
+    baseline_similarity: true  # 使用基线相似度检测
+    
+# 实验流程
+stages:
+  - "data_loading"
+  - "attack_generation"
+  - "consistency_detection"  # 仅一致性检测
+  - "evaluation"
+  
+# 评估配置
+evaluation:
+  metrics:
+    - "attack_success_rate"
+    - "detection_accuracy"
+    - "false_positive_rate"
+    - "retrieval_accuracy"
+    - "processing_time"
+    - "gpu_memory"
+    
+# 输出配置
+output:
+  save_results: true
+  generate_plots: true
+  save_intermediate: false
+  
+# 性能配置
+performance:
+  batch_size: 16
+  num_workers: 4
+  device: "cuda"
+  mixed_precision: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "ablation_consistency_only.log"

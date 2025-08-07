@@ -4,13 +4,16 @@
 """
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from typing import List, Dict, Tuple, Optional, Union, Any
 from dataclasses import dataclass
 import logging
+import time
 from PIL import Image
 import torchvision.transforms as transforms
+from tqdm import tqdm
 
 @dataclass
 class PGDAttackConfig:
@@ -41,6 +44,18 @@ class PGDAttackConfig:
     # 缓存配置
     enable_cache: bool = True
     cache_size: int = 1000
+    
+    # 多GPU和批处理优化配置
+    enable_multi_gpu: bool = False        # 是否启用多GPU
+    gpu_ids: Optional[List[int]] = None   # 指定GPU ID列表，None表示使用所有可用GPU
+    batch_size_per_gpu: int = 8           # 每个GPU的批次大小
+    num_workers: int = 4                  # 数据加载器工作进程数
+    
+    # 内存优化配置
+    gradient_accumulation_steps: int = 1  # 梯度累积步数
+    mixed_precision: bool = False         # 是否使用混合精度
+    pin_memory: bool = True               # 是否使用固定内存
+    gradient_clip_value: float = 0.0      # 梯度裁剪值，0表示不裁剪
 
 class PGDAttacker:
     """PGD攻击器"""
@@ -53,9 +68,13 @@ class PGDAttacker:
             clip_model: CLIP模型实例
             config: 攻击配置
         """
-        self.clip_model = clip_model
         self.config = config
-        self.device = torch.device(config.device)
+        
+        # 设置设备和多GPU配置
+        self._setup_devices()
+        
+        # 初始化CLIP模型
+        self._initialize_clip_model(clip_model)
         
         # 设置随机种子
         torch.manual_seed(config.random_seed)
@@ -86,7 +105,41 @@ class PGDAttacker:
             std=[1/0.229, 1/0.224, 1/0.225]
         )
         
-        logging.info(f"PGD攻击器初始化完成，配置: {config}")
+        logging.info(f"PGD攻击器初始化完成，设备: {self.device}")
+        logging.info(f"多GPU配置: 启用={config.enable_multi_gpu}, GPU数量={len(self.device_ids)}")
+        logging.info(f"批处理配置: 总批次大小={config.batch_size}, 每GPU批次大小={config.batch_size_per_gpu}")
+    
+    def _setup_devices(self):
+        """设置设备和多GPU配置"""
+        if self.config.enable_multi_gpu and torch.cuda.device_count() > 1:
+            if self.config.gpu_ids is None:
+                self.device_ids = list(range(torch.cuda.device_count()))
+            else:
+                self.device_ids = self.config.gpu_ids
+            
+            self.device = torch.device(f'cuda:{self.device_ids[0]}')
+        else:
+            self.device_ids = [0] if torch.cuda.is_available() else []
+            self.device = torch.device(self.config.device if torch.cuda.is_available() else "cpu")
+    
+    def _initialize_clip_model(self, clip_model):
+        """初始化CLIP模型"""
+        self.clip_model = clip_model
+        
+        # 设置多GPU支持
+        if self.config.enable_multi_gpu and len(self.device_ids) > 1:
+            if hasattr(self.clip_model, 'model'):
+                self.clip_model.model = nn.DataParallel(
+                    self.clip_model.model, device_ids=self.device_ids
+                )
+            else:
+                self.clip_model = nn.DataParallel(
+                    self.clip_model, device_ids=self.device_ids
+                )
+        
+        # 将模型移动到主设备
+        if hasattr(self.clip_model, 'to'):
+            self.clip_model = self.clip_model.to(self.device)
     
     def attack(self, image: Union[Image.Image, torch.Tensor], 
                text: str, 
@@ -118,8 +171,15 @@ class PGDAttacker:
         # 编码文本
         with torch.no_grad():
             text_features = self.clip_model.encode_text([text])
+            # 确保文本特征在正确的设备上
+            if isinstance(text_features, torch.Tensor):
+                text_features = text_features.to(self.device)
+            
             if target_text:
                 target_features = self.clip_model.encode_text([target_text])
+                # 确保目标文本特征在正确的设备上
+                if isinstance(target_features, torch.Tensor):
+                    target_features = target_features.to(self.device)
             else:
                 target_features = None
         
@@ -189,8 +249,15 @@ class PGDAttacker:
         for step in range(self.config.num_steps):
             adv_image.requires_grad_(True)
             
-            # 前向传播
-            adv_features = self.clip_model.encode_image(adv_image)
+            # 前向传播（启用梯度计算）
+            if hasattr(self.clip_model, 'encode_image_tensor'):
+                adv_features = self.clip_model.encode_image_tensor(adv_image, requires_grad=True)
+            else:
+                adv_features = self.clip_model.encode_image(adv_image)
+            
+            # 确保图像特征在正确的设备上
+            if isinstance(adv_features, torch.Tensor):
+                adv_features = adv_features.to(self.device)
             
             # 计算损失
             if self.config.targeted and target_features is not None:
@@ -225,7 +292,10 @@ class PGDAttacker:
             
             # 记录统计信息
             with torch.no_grad():
-                current_features = self.clip_model.encode_image(adv_image)
+                if hasattr(self.clip_model, 'encode_image_tensor'):
+                    current_features = self.clip_model.encode_image_tensor(adv_image, requires_grad=False)
+                else:
+                    current_features = self.clip_model.encode_image(adv_image)
                 similarity = F.cosine_similarity(current_features, text_features).mean().item()
                 
                 attack_info['loss_history'].append(loss.item())
@@ -254,7 +324,10 @@ class PGDAttacker:
             攻击是否成功
         """
         with torch.no_grad():
-            adv_features = self.clip_model.encode_image(adversarial_image)
+            if hasattr(self.clip_model, 'encode_image_tensor'):
+                adv_features = self.clip_model.encode_image_tensor(adversarial_image, requires_grad=False)
+            else:
+                adv_features = self.clip_model.encode_image(adversarial_image)
             
             if self.config.targeted and target_features is not None:
                 # 目标攻击：检查是否与目标文本更相似
@@ -270,7 +343,7 @@ class PGDAttacker:
                     texts: List[str], 
                     target_texts: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
-        批量攻击
+        真正的批量攻击实现
         
         Args:
             images: 图像列表
@@ -280,12 +353,212 @@ class PGDAttacker:
         Returns:
             攻击结果列表
         """
+        logging.info(f"开始批量PGD攻击 {len(images)} 个样本")
+        start_time = time.time()
+        
+        # 预处理所有图像
+        image_tensors = []
+        for img in images:
+            if isinstance(img, Image.Image):
+                img_tensor = self.transform(img)
+            else:
+                img_tensor = img
+            image_tensors.append(img_tensor)
+        
+        # 转换为批量张量
+        batch_images = torch.stack(image_tensors)
+        
+        # 分批处理以适应GPU内存
+        all_results = []
+        total_batches = (len(images) + self.config.batch_size - 1) // self.config.batch_size
+        
+        with tqdm(total=total_batches, desc="PGD批量攻击进度") as pbar:
+            for batch_idx in range(0, len(images), self.config.batch_size):
+                batch_end = min(batch_idx + self.config.batch_size, len(images))
+                
+                batch_imgs = batch_images[batch_idx:batch_end].to(self.device)
+                batch_texts = texts[batch_idx:batch_end]
+                batch_targets = target_texts[batch_idx:batch_end] if target_texts else None
+                
+                # 执行批量攻击
+                batch_results = self._batch_pgd_attack(batch_imgs, batch_texts, batch_targets)
+                all_results.extend(batch_results)
+                
+                pbar.update(1)
+                pbar.set_postfix({
+                    'batch': f'{batch_idx//self.config.batch_size + 1}/{total_batches}',
+                    'success_rate': f'{sum(r["success"] for r in batch_results)/len(batch_results):.3f}'
+                })
+        
+        attack_time = time.time() - start_time
+        success_count = sum(1 for r in all_results if r['success'])
+        
+        # 更新统计信息
+        self.attack_stats['total_attacks'] += len(images)
+        if success_count > 0:
+            self.attack_stats['successful_attacks'] += success_count
+        
+        logging.info(f"批量PGD攻击完成，成功率: {success_count}/{len(images)} ({success_count/len(images):.3f})")
+        logging.info(f"总耗时: {attack_time:.2f}秒，平均每样本: {attack_time/len(images):.3f}秒")
+        
+        return all_results
+    
+    def _batch_pgd_attack(self, batch_images: torch.Tensor, batch_texts: List[str], 
+                         batch_targets: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """
+        批量PGD攻击的核心实现
+        
+        Args:
+            batch_images: 批量图像张量 [batch_size, C, H, W]
+            batch_texts: 批量文本列表
+            batch_targets: 批量目标文本列表（可选）
+            
+        Returns:
+            批量攻击结果
+        """
+        batch_size = batch_images.size(0)
         results = []
         
-        for i, (image, text) in enumerate(zip(images, texts)):
-            target_text = target_texts[i] if target_texts else None
-            result = self.attack(image, text, target_text)
-            results.append(result)
+        # 编码文本特征
+        with torch.no_grad():
+            text_features = self.clip_model.encode_text(batch_texts)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+            
+            if batch_targets:
+                target_features = self.clip_model.encode_text(batch_targets)
+                target_features = target_features / target_features.norm(dim=-1, keepdim=True)
+            else:
+                target_features = None
+        
+        # 初始化对抗样本
+        adv_images = batch_images.clone().detach()
+        
+        # 添加随机噪声
+        if self.config.num_steps > 1:
+            noise = torch.empty_like(adv_images).uniform_(
+                -self.config.epsilon, self.config.epsilon
+            )
+            adv_images = torch.clamp(adv_images + noise, 
+                                   self.config.clip_min, self.config.clip_max)
+        
+        # 初始化动量
+        momentum = torch.zeros_like(adv_images) if self.config.use_momentum else None
+        
+        # 优化器设置
+        if self.config.mixed_precision:
+            scaler = torch.cuda.amp.GradScaler()
+        
+        # 迭代攻击
+        for step in range(self.config.num_steps):
+            adv_images.requires_grad_(True)
+            
+            if self.config.mixed_precision:
+                with torch.cuda.amp.autocast():
+                    # 编码图像特征
+                    if hasattr(self.clip_model, 'encode_image_tensor'):
+                        adv_features = self.clip_model.encode_image_tensor(adv_images, requires_grad=True)
+                    else:
+                        adv_features = self.clip_model.encode_image(adv_images)
+                    
+                    adv_features = adv_features / adv_features.norm(dim=-1, keepdim=True)
+                    
+                    # 计算损失
+                    if self.config.targeted and target_features is not None:
+                        # 目标攻击：最大化与目标文本的相似度
+                        loss = -F.cosine_similarity(adv_features, target_features, dim=-1).mean()
+                    else:
+                        # 非目标攻击：最小化与原始文本的相似度
+                        loss = F.cosine_similarity(adv_features, text_features, dim=-1).mean()
+                
+                # 反向传播
+                scaler.scale(loss).backward()
+                scaler.step(lambda: None)  # 手动梯度更新
+                scaler.update()
+            else:
+                # 编码图像特征
+                if hasattr(self.clip_model, 'encode_image_tensor'):
+                    adv_features = self.clip_model.encode_image_tensor(adv_images, requires_grad=True)
+                else:
+                    adv_features = self.clip_model.encode_image(adv_images)
+                
+                adv_features = adv_features / adv_features.norm(dim=-1, keepdim=True)
+                
+                # 计算损失
+                if self.config.targeted and target_features is not None:
+                    # 目标攻击：最大化与目标文本的相似度
+                    loss = -F.cosine_similarity(adv_features, target_features, dim=-1).mean()
+                else:
+                    # 非目标攻击：最小化与原始文本的相似度
+                    loss = F.cosine_similarity(adv_features, text_features, dim=-1).mean()
+                
+                # 反向传播
+                loss.backward()
+            
+            # 获取梯度
+            grad = adv_images.grad.data
+            
+            # 梯度裁剪
+            if self.config.gradient_clip_value > 0:
+                torch.nn.utils.clip_grad_norm_([adv_images], self.config.gradient_clip_value)
+            
+            # 应用动量
+            if self.config.use_momentum and momentum is not None:
+                momentum = self.config.momentum * momentum + grad / torch.norm(grad, p=1, dim=(1,2,3), keepdim=True)
+                grad = momentum
+            
+            # 更新对抗样本
+            with torch.no_grad():
+                if self.config.targeted:
+                    adv_images.data = adv_images.data - self.config.alpha * grad.sign()
+                else:
+                    adv_images.data = adv_images.data + self.config.alpha * grad.sign()
+                
+                # 投影到约束集合
+                delta = torch.clamp(adv_images.data - batch_images, 
+                                  -self.config.epsilon, self.config.epsilon)
+                adv_images.data = torch.clamp(batch_images + delta, 
+                                            self.config.clip_min, self.config.clip_max)
+                
+                # 清零梯度
+                adv_images.grad.zero_()
+        
+        # 评估攻击结果
+        with torch.no_grad():
+            final_features = self.clip_model.encode_image(adv_images)
+            final_features = final_features / final_features.norm(dim=-1, keepdim=True)
+            
+            for i in range(batch_size):
+                # 计算攻击成功率
+                if self.config.targeted and target_features is not None:
+                    similarity = F.cosine_similarity(
+                        final_features[i:i+1], target_features[i:i+1], dim=-1
+                    ).item()
+                    success = similarity > 0.5  # 目标攻击成功阈值
+                else:
+                    similarity = F.cosine_similarity(
+                        final_features[i:i+1], text_features[i:i+1], dim=-1
+                    ).item()
+                    success = similarity < 0.3  # 非目标攻击成功阈值
+                
+                # 计算扰动强度
+                perturbation = (adv_images[i] - batch_images[i]).abs()
+                perturbation_norm = perturbation.max().item()  # L∞范数
+                
+                attack_info = {
+                    'iterations': self.config.num_steps,
+                    'final_similarity': similarity,
+                    'perturbation_norm': perturbation_norm,
+                    'targeted': self.config.targeted
+                }
+                
+                results.append({
+                    'adversarial_image': adv_images[i].cpu(),
+                    'original_image': batch_images[i].cpu(),
+                    'perturbation': (adv_images[i] - batch_images[i]).cpu(),
+                    'success': success,
+                    'attack_info': attack_info,
+                    'config': self.config
+                })
         
         return results
     
@@ -303,7 +576,13 @@ class PGDAttacker:
             缓存键
         """
         # 简化的缓存键生成
-        image_hash = hash(str(image)) if isinstance(image, Image.Image) else hash(image.data.tobytes())
+        if isinstance(image, Image.Image):
+            image_hash = hash(str(image))
+        else:
+            # 对于张量，使用其形状和部分值来生成哈希
+            tensor_info = f"{image.shape}_{image.device}_{image.sum().item()}"
+            image_hash = hash(tensor_info)
+        
         text_hash = hash(text)
         target_hash = hash(target_text) if target_text else 0
         

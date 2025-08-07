@@ -1,0 +1,109 @@
+# 效率分析配置：完整防御流水线
+# 作者: 张昕 (zhang.xin@duke.edu)
+# 机构: Duke University
+
+# 继承基础配置
+inherits:
+  - ../default.yaml
+  - ../datasets/coco.yaml
+  - ../attacks/pgd.yaml
+  - ../defenses/base.yaml
+
+# 实验特定配置
+experiment:
+  name: "efficiency_full_pipeline"
+  description: "效率分析：完整防御流水线的端到端性能测试"
+  type: "efficiency"
+  
+# 数据集配置覆盖
+dataset:
+  name: "coco"
+  num_samples: 100  # 效率测试使用小样本
+  
+# 攻击配置覆盖
+attack:
+  method: "pgd"
+  params:
+    epsilon: 8
+    alpha: 2
+    num_iter: 10
+    batch_size: 8  # 考虑到SD生成的内存需求
+    
+# 防御配置覆盖 - 启用所有模块
+defense:
+  text_variants:
+    enabled: true
+    num_variants: 8
+    methods: ["synonym", "paraphrase", "syntax"]
+    
+  retrieval_reference:
+    enabled: true
+    num_references: 5
+    similarity_threshold: 0.7
+    use_faiss: true
+    
+  generative_reference:
+    enabled: true
+    num_images: 3
+    model: "stable-diffusion-v1-5"
+    guidance_scale: 7.5
+    num_inference_steps: 20
+    
+  consistency_detection:
+    enabled: true
+    similarity_threshold: 0.85
+    voting_strategy: "majority"
+    adaptive_threshold: true
+    
+# 实验流程
+stages:
+  - "data_loading"
+  - "attack_generation"
+  - "text_augmentation"
+  - "retrieval_reference"
+  - "generative_reference"
+  - "consistency_detection"
+  - "evaluation"
+  
+# 评估配置
+evaluation:
+  metrics:
+    - "processing_time"
+    - "gpu_memory"
+    - "cpu_usage"
+    - "memory_usage"
+    - "throughput"
+    - "stage_timing"  # 各阶段计时
+    - "memory_breakdown"  # 内存使用分解
+    
+# 性能分析配置
+performance_analysis:
+  enabled: true
+  detailed_timing: true
+  memory_profiling: true
+  gpu_profiling: true
+  iterations: 5  # 完整流水线较慢
+  warmup_iterations: 2
+  profile_all_stages: true
+  stage_breakdown: true
+  
+# 输出配置
+output:
+  save_results: true
+  generate_plots: true
+  save_intermediate: false
+  save_profiling_data: true
+  save_stage_breakdown: true
+  
+# 性能配置
+performance:
+  batch_size: 8
+  num_workers: 2
+  device: "cuda"
+  mixed_precision: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "efficiency_full_pipeline.log"

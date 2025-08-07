@@ -1,0 +1,183 @@
+# Flickr30K + Hubness + 完整防御实验配置
+name: "flickr_hubness_full_experiment"
+description: "Complete experiment: Flickr30K dataset + Hubness attack + full defense (TVC + GenRef)"
+version: "1.0"
+
+# 继承基础配置
+inherits:
+  - "../default.yaml"
+  - "../datasets/flickr.yaml"
+  - "../attacks/hubness.yaml"
+  - "../defenses/genref.yaml"
+
+# 实验特定覆盖配置
+overrides:
+  # 数据集配置覆盖
+  dataset:
+    sampling:
+      num_samples: 1000  # 实验样本数
+      strategy: "stratified"  # 分层采样确保代表性
+      
+  # 攻击配置覆盖
+  attack:
+    parameters:
+      num_iterations: 100  # Hubness攻击迭代次数
+      k_neighbors: 15      # 适合Flickr30k的k近邻数量
+      epsilon: 0.031       # 扰动幅度
+      learning_rate: 0.02  # 学习率
+      num_target_queries: 80  # 适合Flickr30k的目标查询数量
+    # 保持hubness.yaml中的批处理和多GPU配置
+    # batch.size: 32 (继承自hubness.yaml)
+    # multi_gpu配置也继承自hubness.yaml
+    
+# 防御配置
+defense:
+  # 基础一致性检测
+  base_consistency:
+    enabled: true
+    threshold: 0.8
+    
+  # 文本变体一致性 (TVC)
+  text_variant_consistency:
+    enabled: true
+    num_variants: 8
+    similarity_threshold: 0.85
+    aggregation_method: "mean"
+    
+  # 生成参考一致性 (GenRef)
+  generative_references:
+    enabled: true
+    num_references: 5
+    quality_threshold: 0.7
+    diversity_threshold: 0.3
+    
+  # 集成检测
+  ensemble:
+    enabled: true
+    weights:
+      base: 0.3
+      tvc: 0.4
+      genref: 0.3
+    aggregation: "weighted_average"
+    
+# 模型配置
+model:
+  # CLIP模型
+  clip:
+    name: "ViT-B/32"
+    device: "cuda"
+    batch_size: 64
+    
+  # Qwen模型（用于文本变体生成）
+  qwen:
+    model_name: "Qwen/Qwen-7B-Chat"
+    device: "cuda"
+    max_length: 512
+    temperature: 0.7
+    
+  # Stable Diffusion模型（用于参考生成）
+  stable_diffusion:
+    model_name: "runwayml/stable-diffusion-v1-5"
+    device: "cuda"
+    num_inference_steps: 20
+    guidance_scale: 7.5
+    
+# 评估配置
+evaluation:
+  metrics:
+    # 检测性能
+    - "detection_accuracy"
+    - "detection_precision"
+    - "detection_recall"
+    - "detection_f1"
+    - "detection_auc"
+    
+    # 攻击成功率
+    - "attack_success_rate"
+    - "robust_accuracy"
+    
+    # 检索性能
+    - "retrieval_recall@1"
+    - "retrieval_recall@5"
+    - "retrieval_recall@10"
+    
+    # 效率指标
+    - "inference_time"
+    - "memory_usage"
+    
+  # 阈值搜索
+  threshold_search:
+    enabled: true
+    method: "grid_search"
+    range: [0.5, 0.95]
+    step: 0.05
+    metric: "f1"
+    
+# 实验流程
+pipeline:
+  stages:
+    1. "data_preparation":
+        - load_dataset
+        - preprocess_data
+        - create_splits
+        
+    2. "clean_evaluation":
+        - evaluate_clean_performance
+        - establish_baseline
+        
+    3. "attack_generation":
+        - generate_adversarial_samples
+        - validate_attack_success
+        
+    4. "defense_evaluation":
+        - test_base_consistency
+        - test_tvc_defense
+        - test_genref_defense
+        - test_ensemble_defense
+        
+    5. "analysis":
+        - compute_metrics
+        - statistical_analysis
+        - generate_visualizations
+        
+# 输出配置
+output:
+  base_path: "experiments/results/flickr_hubness_full"
+  
+  # 保存内容
+  save:
+    adversarial_samples: true
+    detection_results: true
+    metrics: true
+    visualizations: true
+    model_checkpoints: false
+    
+  # 可视化
+  visualizations:
+    - "roc_curves"
+    - "pr_curves"
+    - "confusion_matrices"
+    - "similarity_distributions"
+    - "tsne_embeddings"
+    
+# 资源配置
+resources:
+  gpu_memory: "16GB"
+  cpu_cores: 8
+  max_runtime: "6h"
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "flickr_hubness_full.log"
+  tensorboard: true
+  wandb:
+    enabled: false
+    project: "multimodal_defense"
+    
+# 错误处理
+error_handling:
+  continue_on_error: false
+  max_retries: 3
+  timeout: 3600           # 1小时超时

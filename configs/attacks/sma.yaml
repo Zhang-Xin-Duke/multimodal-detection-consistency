@@ -1,0 +1,111 @@
+# SMA (Semantic Misalignment Attack) 攻击配置
+# 语义错位攻击
+
+attack:
+  name: "sma"
+  type: "semantic_misalignment_attack"
+  
+  # 攻击参数
+  parameters:
+    # 基础参数
+    epsilon: 0.031          # 扰动幅度 (8/255)
+    alpha: 0.008            # 步长 (2/255)
+    num_iter: 15            # 迭代次数
+    
+    # SMA特定参数
+    semantic_loss_weight: 2.0     # 语义损失权重
+    alignment_loss_weight: 1.0    # 对齐损失权重
+    adversarial_loss_weight: 0.5  # 对抗损失权重
+    
+    # 语义操作参数
+    semantic_operation: "misalign"  # 语义操作: misalign, invert, shuffle
+    misalignment_strength: 0.8     # 错位强度
+    semantic_dimensions: 512       # 语义维度
+    
+    # 目标设置
+    targeted: false         # 通常为非目标攻击
+    semantic_target: null   # 语义目标（可选）
+    
+    # 多模态参数
+    text_perturbation: true      # 是否扰动文本
+    image_perturbation: true     # 是否扰动图像
+    cross_modal_weight: 1.5      # 跨模态权重
+    
+    # 语义一致性参数
+    consistency_threshold: 0.7   # 一致性阈值
+    semantic_similarity_metric: "cosine"  # 语义相似度度量
+    
+    # 优化参数
+    momentum: 0.9           # 动量系数
+    decay_factor: 0.95      # 衰减因子
+    learning_rate: 0.01     # 学习率
+    
+    # 约束参数
+    norm_type: "inf"        # 范数类型: inf, 2
+    clamp_min: 0.0          # 像素值下界
+    clamp_max: 1.0          # 像素值上界
+    
+    # 高级参数
+    adaptive_weights: true       # 自适应权重
+    semantic_regularization: 0.1 # 语义正则化
+    
+# 批处理配置
+batch:
+  size: 32
+  accumulation_steps: 1
+  
+# 多GPU配置
+multi_gpu:
+  enabled: true
+  gpu_ids: [0, 1, 2, 3, 4, 5]
+  batch_size_per_gpu: 8
+  sync_bn: false
+
+# 评估配置diversity_promotion: true    # 促进多样性
+    
+    # 文本扰动参数（如果启用）
+    text_perturbation_method: "synonym"  # 文本扰动方法: synonym, paraphrase
+    max_text_changes: 3              # 最大文本变更数
+    
+  # 评估设置
+  evaluation:
+    batch_size: 24          # 中等batch size
+    num_samples: 1500       # 评估样本数
+    save_adversarial: true  # 保存对抗样本
+    semantic_analysis: true # 语义分析
+    
+  # 输出设置
+  output:
+    save_path: "experiments/results/sma_attack"
+    log_interval: 8         # 日志间隔
+    save_interval: 75       # 保存间隔
+    semantic_save_path: "experiments/results/sma_attack/semantic"
+    
+# 数据集配置
+dataset:
+  name: "coco"
+  split: "val"
+  subset_size: 3000       # 中等大小的数据集
+  include_captions: true  # 包含标题用于语义分析
+  
+# 模型配置
+model:
+  name: "clip"
+  variant: "ViT-B/32"
+  device: "cuda"
+  multimodal: true        # 启用多模态功能
+  
+# 实验配置
+experiment:
+  seed: 42
+  num_workers: 3
+  pin_memory: true
+  semantic_evaluation: true  # 启用语义评估
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "sma_attack.log"
+  semantic_metrics: true     # 记录语义指标
+  alignment_analysis: true   # 对齐分析

@@ -1,0 +1,159 @@
+# 随机文本变体防御基线配置
+# 使用随机生成的文本变体，不使用精心设计的语义一致生成方法
+
+# 继承默认配置的基础设置
+base_config: "default.yaml"
+
+# 设备配置
+device:
+  primary: "cuda"
+  fallback: "cpu"
+  gpu_ids: [0, 1, 2, 3, 4, 5]
+  memory_fraction: 0.8
+  allow_growth: true
+
+# 批处理配置
+batch:
+  default_size: 32
+  max_size: 128
+  min_size: 1
+  auto_adjust: true
+
+# 缓存配置
+cache:
+  enabled: true
+  base_dir: "./data/cache"
+  max_size: "50GB"
+  ttl: 86400
+  compression: true
+  backends:
+    features: "disk"
+    images: "disk"
+    indices: "disk"
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "./experiments/logs/baseline_random_text.log"
+  max_size: "100MB"
+  backup_count: 5
+  console: true
+
+# 并行处理配置
+parallel:
+  max_workers: 8
+  backend: "threading"
+  chunk_size: "auto"
+
+# 模型配置
+models:
+  # CLIP模型
+  clip:
+    default_model: "ViT-B/32"
+    cache_dir: "./data/cache/models/clip"
+    precision: "fp16"
+    batch_size: 256
+  
+  # Qwen模型
+  qwen:
+    default_model: "Qwen/Qwen2-1.5B-Instruct"
+    cache_dir: "./data/cache/models/qwen"
+    precision: "fp16"
+    max_length: 512
+  
+  # Stable Diffusion模型
+  stable_diffusion:
+    default_model: "runwayml/stable-diffusion-v1-5"
+    cache_dir: "./data/cache/models/sd"
+    precision: "fp16"
+    safety_checker: false
+
+# 数据配置
+data:
+  base_dir: "./data"
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+
+# 实验配置
+experiments:
+  output_dir: "./experiments/results"
+  save_intermediate: false
+  reproducible: true
+  seed: 42
+
+# 防御配置 - 随机文本变体防御
+defense:
+  enabled: true
+  method: "random_text_variants"
+  
+  # 随机文本变体配置
+  text_variants:
+    enabled: true
+    method: "random"  # 使用随机方法而非语义一致生成
+    num_variants: 5
+    strategies:
+      - "word_shuffle"      # 随机打乱词序
+      - "synonym_replace"   # 随机同义词替换
+      - "word_drop"        # 随机删除词汇
+      - "word_repeat"      # 随机重复词汇
+      - "noise_injection"  # 注入随机噪声
+    random_seed: null  # 使用随机种子
+    preserve_semantics: false  # 不保持语义一致性
+  
+  # 禁用其他防御机制
+  retrieval_reference:
+    enabled: false
+    top_k: 0
+  generative_reference:
+    enabled: false
+    num_generated: 0
+  consistency_check:
+    enabled: true
+    method: "simple_voting"
+    threshold: 0.6
+  adaptive_threshold:
+    enabled: false
+
+# 攻击配置
+attacks:
+  pgd:
+    enabled: true
+    eps: 0.03
+    alpha: 0.01
+    steps: 10
+  hubness:
+    enabled: true
+    k: 10
+    alpha: 0.5
+  fsta:
+    enabled: true
+    target_layer: "final"
+    perturbation_budget: 0.03
+  sma:
+    enabled: true
+    semantic_shift: 0.2
+
+# 性能监控
+monitoring:
+  enabled: true
+  gpu_memory: true
+  cpu_usage: true
+  disk_usage: true
+  network: false
+
+# 安全配置
+security:
+  allow_remote_code: false
+  verify_ssl: true
+  max_file_size: "1GB"
+
+# 评估指标
+metrics:
+  attack_success_rate: true
+  top_k_accuracy: true
+  detection_accuracy: true
+  false_positive_rate: true
+  processing_time: true
+  memory_usage: true

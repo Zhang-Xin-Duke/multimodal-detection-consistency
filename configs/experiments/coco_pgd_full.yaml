@@ -1,0 +1,234 @@
+# COCO + PGD + 完整防御实验配置
+name: "coco_pgd_full_experiment"
+description: "Complete experiment: COCO dataset + PGD attack + full defense (TVC + GenRef)"
+version: "1.0"
+
+# 继承基础配置
+inherits:
+  - "../default.yaml"
+  - "../datasets/coco.yaml"
+  - "../attacks/pgd.yaml"
+  - "../defenses/genref.yaml"
+
+# 实验特定覆盖配置
+overrides:
+  # 数据集配置覆盖
+  dataset:
+    sampling:
+      num_samples: 1000  # 实验样本数
+      strategy: "stratified"  # 分层采样确保代表性
+      
+  # 攻击配置覆盖
+  attack:
+    attack_params:
+      num_steps: 500  # 减少迭代步数以平衡效果和效率
+      early_stop: true
+      success_threshold: 0.95
+    batch:
+      size: 16  # 减少批大小以适应完整管道
+      
+  # 防御配置覆盖
+  defense:
+    text_variants:
+      generation:
+        num_variants: 6  # 平衡效果和计算开销
+    generative_reference:
+      generation:
+        num_images_per_text: 2  # 减少生成图像数量
+        batch_size: 8
+    detector:
+      weights:
+        direct_consistency: 0.25
+        text_variant_consistency: 0.35
+        generative_reference_consistency: 0.4
+
+# 实验流程配置
+workflow:
+  stages:
+    - "data_preparation"
+    - "attack_generation"
+    - "defense_evaluation"
+    - "results_analysis"
+    
+  # 数据准备阶段
+  data_preparation:
+    validate_dataset: true
+    precompute_features: true
+    build_indices: true
+    
+  # 攻击生成阶段
+  attack_generation:
+    generate_clean_baseline: true
+    generate_adversarial: true
+    validate_attacks: true
+    
+  # 防御评估阶段
+  defense_evaluation:
+    test_clean_samples: true
+    test_adversarial_samples: true
+    cross_validation: false
+    
+  # 结果分析阶段
+  results_analysis:
+    generate_metrics: true
+    generate_plots: true
+    generate_tables: true
+    statistical_tests: true
+
+# 评估配置
+evaluation:
+  # 主要指标
+  primary_metrics:
+    - "accuracy"
+    - "auc_roc"
+    - "auc_pr"
+    
+  # 次要指标
+  secondary_metrics:
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "fpr_at_95_tpr"
+    - "detection_rate"
+    
+  # 攻击特定指标
+  attack_metrics:
+    - "attack_success_rate"
+    - "l2_perturbation"
+    - "linf_perturbation"
+    - "lpips_distance"
+    
+  # 效率指标
+  efficiency_metrics:
+    - "inference_time"
+    - "memory_usage"
+    - "throughput"
+    
+  # 统计测试
+  statistical_tests:
+    - "mcnemar_test"
+    - "wilcoxon_signed_rank"
+    - "bootstrap_confidence_interval"
+
+# 输出配置
+output:
+  base_dir: "./experiments/results/coco_pgd_full"
+  
+  # 保存选项
+  save:
+    raw_predictions: true
+    processed_metrics: true
+    intermediate_results: false
+    model_checkpoints: false
+    
+  # 可视化
+  visualization:
+    roc_curves: true
+    pr_curves: true
+    confusion_matrices: true
+    similarity_distributions: true
+    tsne_plots: true
+    
+  # 报告生成
+  reports:
+    summary_table: true
+    detailed_analysis: true
+    latex_tables: true
+    markdown_report: true
+
+# 资源配置
+resources:
+  # 计算资源
+  compute:
+    max_gpu_memory: "90%"
+    max_cpu_cores: 16
+    max_ram: "64GB"
+    
+  # 存储资源
+  storage:
+    max_disk_usage: "100GB"
+    temp_dir: "./experiments/temp"
+    cleanup_temp: true
+    
+  # 时间限制
+  time_limits:
+    max_experiment_time: "24h"
+    max_stage_time: "6h"
+    checkpoint_interval: "1h"
+
+# 并行配置
+parallel:
+  # 数据并行
+  data_parallel:
+    enabled: true
+    num_workers: 8
+    
+  # 模型并行
+  model_parallel:
+    enabled: true
+    strategy: "pipeline"
+    
+  # 实验并行
+  experiment_parallel:
+    enabled: false  # 单个完整实验
+    max_concurrent: 1
+
+# 监控配置
+monitoring:
+  # 性能监控
+  performance:
+    gpu_utilization: true
+    memory_usage: true
+    cpu_usage: true
+    disk_io: true
+    
+  # 实验监控
+  experiment:
+    progress_tracking: true
+    intermediate_metrics: true
+    error_detection: true
+    
+  # 报警配置
+  alerts:
+    memory_threshold: 0.9
+    time_threshold: 0.8
+    error_threshold: 0.1
+
+# 容错配置
+fault_tolerance:
+  # 重试策略
+  retry:
+    max_retries: 3
+    backoff_factor: 2.0
+    
+  # 检查点
+  checkpointing:
+    enabled: true
+    frequency: "1h"
+    auto_resume: true
+    
+  # 错误处理
+  error_handling:
+    continue_on_error: false
+    log_errors: true
+    save_error_state: true
+
+# 可复现性配置
+reproducibility:
+  seed: 42
+  deterministic: true
+  benchmark: false
+  
+  # 环境记录
+  environment:
+    record_packages: true
+    record_hardware: true
+    record_git_info: true
+
+# 调试配置
+debug:
+  enabled: false
+  verbose_logging: false
+  save_intermediate: false
+  profile_performance: false
+  memory_profiling: false

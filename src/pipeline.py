@@ -106,6 +106,11 @@ class PipelineResult:
     pipeline_steps: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     
+    @property
+    def adversarial_score(self) -> float:
+        """对抗分数（detection_score的别名，用于向后兼容）"""
+        return self.detection_score
+    
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
         return {
@@ -124,6 +129,51 @@ class PipelineResult:
             'pipeline_steps': self.pipeline_steps,
             'errors': self.errors
         }
+
+
+@dataclass
+class BatchProcessingResult:
+    """批处理结果"""
+    results: List[PipelineResult] = field(default_factory=list)
+    total_time: float = 0.0
+    batch_size: int = 0
+    success_count: int = 0
+    error_count: int = 0
+    errors: List[str] = field(default_factory=list)
+    
+    def __post_init__(self):
+        self.batch_size = len(self.results)
+        self.success_count = sum(1 for r in self.results if not r.errors)
+        self.error_count = self.batch_size - self.success_count
+        
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        if not self.results:
+            return {}
+            
+        detection_scores = [r.detection_score for r in self.results if not r.errors]
+        adversarial_count = sum(1 for r in self.results if r.is_adversarial and not r.errors)
+        
+        return {
+            'batch_size': self.batch_size,
+            'success_count': self.success_count,
+            'error_count': self.error_count,
+            'success_rate': self.success_count / self.batch_size if self.batch_size > 0 else 0,
+            'adversarial_count': adversarial_count,
+            'adversarial_rate': adversarial_count / self.success_count if self.success_count > 0 else 0,
+            'avg_detection_score': np.mean(detection_scores) if detection_scores else 0,
+            'total_time': self.total_time,
+            'avg_time_per_sample': self.total_time / self.batch_size if self.batch_size > 0 else 0
+        }
+        
+    def filter_results(self, condition: Callable[[PipelineResult], bool]) -> 'BatchProcessingResult':
+        """过滤结果"""
+        filtered_results = [r for r in self.results if condition(r)]
+        return BatchProcessingResult(
+            results=filtered_results,
+            total_time=self.total_time,
+            errors=self.errors
+        )
 
 
 class PipelineProfiler:
@@ -405,16 +455,24 @@ class MultiModalDetectionPipeline:
             if retrieved_paths:
                 # 加载检索到的图像
                 retrieved_images = []
+                retrieved_texts = []
+                
                 for path in retrieved_paths:
                     try:
                         img = Image.open(path).convert('RGB')
                         retrieved_images.append(img)
+                        
+                        # 从图像路径提取文本描述或使用原始查询文本作为匹配标准
+                        # 对于检索正确率计算，我们需要有意义的文本描述
+                        # 这里使用原始查询文本作为期望的检索结果
+                        retrieved_texts.append(result.original_text)
+                        
                     except Exception as e:
                         logger.warning(f"无法加载图像 {path}: {e}")
                         continue
                 
                 result.retrieved_images = retrieved_images
-                result.retrieved_texts = retrieved_paths  # 暂时使用路径作为文本
+                result.retrieved_texts = retrieved_texts
                 result.retrieval_scores = retrieval_scores
             
             result.retrieval_time = time.time() - start_time

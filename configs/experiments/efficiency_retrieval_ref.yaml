@@ -1,0 +1,96 @@
+# 效率分析配置：检索参考模块
+# 作者: 张昕 (zhang.xin@duke.edu)
+# 机构: Duke University
+
+# 继承基础配置
+inherits:
+  - ../default.yaml
+  - ../datasets/coco.yaml
+  - ../attacks/pgd.yaml
+
+# 实验特定配置
+experiment:
+  name: "efficiency_retrieval_ref"
+  description: "效率分析：仅测试检索参考模块的性能（CLIP检索及FAISS索引）"
+  type: "efficiency"
+  
+# 数据集配置覆盖
+dataset:
+  name: "coco"
+  num_samples: 100  # 效率测试使用小样本
+  
+# 攻击配置覆盖
+attack:
+  method: "pgd"
+  params:
+    epsilon: 8
+    alpha: 2
+    num_iter: 10
+    batch_size: 16  # 较小批次用于精确计时
+    
+# 防御配置覆盖 - 仅启用检索参考
+defense:
+  text_variants:
+    enabled: false  # 禁用其他模块
+    
+  retrieval_reference:
+    enabled: true
+    num_references: 5
+    similarity_threshold: 0.7
+    use_faiss: true
+    index_type: "IVF"
+    nprobe: 10
+    
+  generative_reference:
+    enabled: false  # 禁用其他模块
+    
+  consistency_detection:
+    enabled: false  # 禁用其他模块
+    
+# 实验流程
+stages:
+  - "data_loading"
+  - "attack_generation"
+  - "retrieval_reference"  # 仅检索参考
+  - "evaluation"
+  
+# 评估配置
+evaluation:
+  metrics:
+    - "processing_time"
+    - "gpu_memory"
+    - "cpu_usage"
+    - "memory_usage"
+    - "throughput"
+    - "index_build_time"
+    - "search_time"
+    
+# 性能分析配置
+performance_analysis:
+  enabled: true
+  detailed_timing: true
+  memory_profiling: true
+  gpu_profiling: true
+  iterations: 10  # 多次运行取平均
+  warmup_iterations: 3
+  profile_faiss: true
+  
+# 输出配置
+output:
+  save_results: true
+  generate_plots: true
+  save_intermediate: false
+  save_profiling_data: true
+  
+# 性能配置
+performance:
+  batch_size: 16
+  num_workers: 2
+  device: "cuda"
+  mixed_precision: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "efficiency_retrieval_ref.log"

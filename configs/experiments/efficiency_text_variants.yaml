@@ -1,0 +1,90 @@
+# 效率分析配置：文本变体模块
+# 作者: 张昕 (zhang.xin@duke.edu)
+# 机构: Duke University
+
+# 继承基础配置
+inherits:
+  - ../default.yaml
+  - ../datasets/coco.yaml
+  - ../attacks/pgd.yaml
+
+# 实验特定配置
+experiment:
+  name: "efficiency_text_variants"
+  description: "效率分析：仅测试文本变体生成模块的性能"
+  type: "efficiency"
+  
+# 数据集配置覆盖
+dataset:
+  name: "coco"
+  num_samples: 100  # 效率测试使用小样本
+  
+# 攻击配置覆盖
+attack:
+  method: "pgd"
+  params:
+    epsilon: 8
+    alpha: 2
+    num_iter: 10
+    batch_size: 16  # 较小批次用于精确计时
+    
+# 防御配置覆盖 - 仅启用文本变体
+defense:
+  text_variants:
+    enabled: true
+    num_variants: 8
+    methods: ["synonym", "paraphrase", "syntax"]
+    
+  retrieval_reference:
+    enabled: false  # 禁用其他模块
+    
+  generative_reference:
+    enabled: false  # 禁用其他模块
+    
+  consistency_detection:
+    enabled: false  # 禁用其他模块
+    
+# 实验流程
+stages:
+  - "data_loading"
+  - "attack_generation"
+  - "text_augmentation"  # 仅文本增强
+  - "evaluation"
+  
+# 评估配置
+evaluation:
+  metrics:
+    - "processing_time"
+    - "gpu_memory"
+    - "cpu_usage"
+    - "memory_usage"
+    - "throughput"
+    
+# 性能分析配置
+performance_analysis:
+  enabled: true
+  detailed_timing: true
+  memory_profiling: true
+  gpu_profiling: true
+  iterations: 10  # 多次运行取平均
+  warmup_iterations: 3
+  
+# 输出配置
+output:
+  save_results: true
+  generate_plots: true
+  save_intermediate: false
+  save_profiling_data: true
+  
+# 性能配置
+performance:
+  batch_size: 16
+  num_workers: 2
+  device: "cuda"
+  mixed_precision: true
+  
+# 日志配置
+logging:
+  level: "INFO"
+  save_logs: true
+  log_file: "efficiency_text_variants.log"
